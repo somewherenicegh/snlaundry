@@ -83,9 +83,6 @@ function shell(settings, bodyHtml) {
       <div style="font-size:12px;color:#6b7280;letter-spacing:.08em;text-transform:uppercase">Laundry Service</div>
     </div>
     <div style="padding:24px 4px;font-size:15px;line-height:1.55">${bodyHtml}</div>
-    <div style="border-top:1px solid #e5e7eb;padding:14px 4px;font-size:12px;color:#9ca3af;text-align:center">
-      This is an automated message from ${name}. Please do not reply directly.
-    </div>
   </div>`;
 }
 
@@ -118,27 +115,31 @@ export function orderEmail(kind, order, settings) {
     accepted: {
       subject: `Order #${order.number} accepted — ${settings.hostelName || 'Laundry'}`,
       body: `<p>Hi ${escapeHtml(firstName(order.guestName))},</p>
-        <p>${statusBadge('Accepted', '#2563eb')} Your laundry order has been received and accepted.</p>
+        <p style="margin:16px 0 8px">${statusBadge('Accepted', '#2563eb')}</p>
+        <p style="margin:0">Your laundry order has been received and accepted.</p>
         ${details}
         <p>We'll let you know as soon as it moves into cleaning.</p>${trackBtn}`,
     },
     cleaning: {
       subject: `Order #${order.number} is being cleaned`,
       body: `<p>Hi ${escapeHtml(firstName(order.guestName))},</p>
-        <p>${statusBadge('Cleaning', '#d97706')} Good news — your laundry is now being cleaned.</p>
+        <p style="margin:16px 0 8px">${statusBadge('Cleaning', '#d97706')}</p>
+        <p style="margin:0">Good news — your laundry is now being cleaned.</p>
         ${details}${trackBtn}`,
     },
     ready: {
       subject: `Order #${order.number} is ready for pickup 🧺`,
       body: `<p>Hi ${escapeHtml(firstName(order.guestName))},</p>
-        <p>${statusBadge('Ready', '#16a34a')} Your laundry is clean and ready for pickup at reception.</p>
+        <p style="margin:16px 0 8px">${statusBadge('Ready', '#16a34a')}</p>
+        <p style="margin:0">Your laundry is clean and ready for pickup at reception.</p>
         ${details}
         <p>${order.paymentStatus === 'paid' ? 'Payment received — thank you!' : 'Payment will be collected at pickup.'}</p>${trackBtn}`,
     },
     completed: {
       subject: `Order #${order.number} completed — thank you!`,
       body: `<p>Hi ${escapeHtml(firstName(order.guestName))},</p>
-        <p>${statusBadge('Completed', '#4b5563')} Your laundry has been picked up. Thank you for staying with us!</p>
+        <p style="margin:16px 0 8px">${statusBadge('Completed', '#4b5563')}</p>
+        <p style="margin:0">Your laundry has been picked up. Thank you for staying with us!</p>
         ${details}`,
     },
     reply: {

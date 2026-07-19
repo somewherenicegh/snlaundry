@@ -48,6 +48,7 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - **Auto-lock** after 5 minutes of inactivity.
 - **Shift-boundary lock:** when the clock crosses into a new shift period, the terminal locks and asks whether to start a new shift or continue the current one — continuing requires the PIN of the cashier who started that shift.
 - Orders are tagged by **room name** (e.g. *Duafe*), not room number.
+- Generic app icon (favicon), and staff can type their PIN on a physical keyboard (PC) as well as the on-screen pad.
 
 ---
 

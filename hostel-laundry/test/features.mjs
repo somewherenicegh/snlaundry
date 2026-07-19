@@ -119,6 +119,14 @@ try {
   ok('handover opens the new shift', r.status === 201 && r.body.type === 'PM');
   r = await api('GET', '/api/shifts', { headers: H(adminT) });
   ok('only one shift open after handover', r.body.filter(s => s.status === 'open').length === 1);
+
+  section('Email formatting');
+  const { orderEmail } = await import('../netlify/functions/lib/email.js');
+  const em = orderEmail('accepted',
+    { number: 5, guestName: 'Test User', items: 3, loads: 1, price: 10, paymentStatus: 'unpaid', pickupAt: new Date().toISOString(), publicId: 'p' },
+    { hostelName: 'somewhere nice', currency: { symbol: '₵' } });
+  ok('email footer line removed', !/do not reply directly/i.test(em.html));
+  ok('status badge is on its own row, separate from the sentence', /Accepted<\/span><\/p>\s*<p[^>]*>Your laundry order/.test(em.html), 'badge not separated');
 } catch (err) {
   fail++; out.push(`\n💥 ${err.stack || err}`);
 }
