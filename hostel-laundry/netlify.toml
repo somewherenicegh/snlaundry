@@ -1,0 +1,30 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+# Route all API calls to the single router function.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# Pretty routes for the guest + staff pages.
+[[redirects]]
+  from = "/order"
+  to = "/order.html"
+  status = 200
+
+[[redirects]]
+  from = "/track"
+  to = "/track.html"
+  status = 200
+
+[[redirects]]
+  from = "/app"
+  to = "/app.html"
+  status = 200
+
+# Scheduled function: check for orders stuck at "accepted".
+# Runs every 15 minutes; the handler applies the admin-set threshold.
+[functions."stuck-check"]
+  schedule = "*/15 * * * *"

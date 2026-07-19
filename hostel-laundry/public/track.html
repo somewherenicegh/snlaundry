@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Track your Laundry</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="brandbar" id="brand">
+      <div>
+        <div class="name" id="brandName">Laundry Service</div>
+        <div class="sub">Order Tracking</div>
+      </div>
+    </div>
+
+    <div id="notFound" class="card hidden center">
+      <h2>Order not found</h2>
+      <p class="hint">This tracking link doesn't match an order. Please check the link or ask reception.</p>
+    </div>
+
+    <div id="content" class="hidden">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h2 style="margin:0">Order #<span id="oNum"></span></h2>
+          <span id="oStatus" class="badge"></span>
+        </div>
+        <div id="progress" style="margin:18px 0"></div>
+        <table class="data" style="margin-top:6px">
+          <tbody id="oDetails"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Messages</h2>
+        <p class="hint">Questions about your laundry? Message reception here.</p>
+        <div class="thread" id="thread"></div>
+        <form id="msgForm" style="display:flex;gap:8px;margin-top:12px">
+          <input id="msgInput" placeholder="Type a message…" autocomplete="off" required style="flex:1" />
+          <button type="submit" class="small">Send</button>
+        </form>
+      </div>
+      <p class="center muted" style="font-size:12px">Status updates automatically. You'll also get emails at each stage.</p>
+    </div>
+  </div>
+  <script src="/assets/track.js"></script>
+</body>
+</html>
