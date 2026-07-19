@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Place a Laundry Order</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="brandbar" id="brand">
+      <div>
+        <div class="name" id="brandName">Laundry Service</div>
+        <div class="sub">Guest Laundry</div>
+      </div>
+    </div>
+
+    <div class="card" id="formCard">
+      <h2>Place your laundry order</h2>
+      <p class="hint" id="priceHint">Fill in your details and reception will confirm your order.</p>
+      <div id="msg"></div>
+      <form id="orderForm">
+        <label for="name">Full name</label>
+        <input id="name" name="name" required autocomplete="name" placeholder="e.g. Jamie Rivera" />
+
+        <label for="email">Email address</label>
+        <input id="email" name="email" type="email" required autocomplete="email" placeholder="you@example.com" />
+        <p class="muted" style="font-size:12px;margin:6px 0 0">We'll email you updates as your laundry is processed.</p>
+
+        <label for="items">Number of items</label>
+        <input id="items" name="items" type="number" min="1" step="1" required placeholder="e.g. 12" />
+        <p class="muted" id="loadHint" style="font-size:12px;margin:6px 0 0"></p>
+
+        <label for="note">Anything we should know? <span class="muted">(optional)</span></label>
+        <textarea id="note" name="note" placeholder="e.g. delicate items, room number, preferred pickup time"></textarea>
+
+        <button type="submit" class="btn-full" style="margin-top:18px" id="submitBtn">Submit order</button>
+      </form>
+    </div>
+
+    <div class="card hidden center" id="doneCard">
+      <div style="font-size:44px">🧺</div>
+      <h2>Order received!</h2>
+      <p class="hint" id="doneMsg"></p>
+      <a class="btn btn-full" id="trackLink" href="#">Track your order</a>
+      <p class="muted" style="font-size:12px;margin-top:14px">Bookmark that link to check status and message reception.</p>
+    </div>
+  </div>
+  <script src="/assets/order.js"></script>
+</body>
+</html>

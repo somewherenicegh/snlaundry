@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Laundry Service</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="brandbar" id="brand">
+      <div>
+        <div class="name" id="brandName">Laundry Service</div>
+        <div class="sub">In-house Laundry</div>
+      </div>
+    </div>
+    <div class="card center">
+      <div style="font-size:44px">🧺</div>
+      <h2>Laundry Service</h2>
+      <p class="hint">Guests can place an order; staff manage everything from the reception app.</p>
+      <div class="stack">
+        <a class="btn btn-full" href="/order">Place an order (guest)</a>
+        <a class="btn btn-full secondary" href="/app">Reception / Admin</a>
+      </div>
+    </div>
+    <p class="center muted" style="font-size:12px">Guests normally reach the order page by scanning the QR code at reception.</p>
+  </div>
+  <script>
+    fetch('/api/public-settings').then(r=>r.json()).then(s=>{
+      if(s.accentColor) document.documentElement.style.setProperty('--accent', s.accentColor);
+      if(s.hostelName){ document.getElementById('brandName').textContent = s.hostelName; document.title = s.hostelName + ' · Laundry'; }
+      if(s.logoDataUrl){ const i=document.createElement('img'); i.src=s.logoDataUrl; i.alt=s.hostelName||''; document.getElementById('brand').prepend(i); }
+    }).catch(()=>{});
+  </script>
+</body>
+</html>

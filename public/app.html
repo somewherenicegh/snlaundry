@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reception · Laundry</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+
+<!-- ============ FIRST-RUN SETUP ============ -->
+<div id="setupScreen" class="wrap hidden">
+  <div class="brandbar"><div><div class="name">Welcome</div><div class="sub">First-time setup</div></div></div>
+  <div class="card">
+    <h2>Set up your laundry system</h2>
+    <p class="hint">Create the first admin account. You can change everything later in Settings.</p>
+    <div id="setupMsg"></div>
+    <label>Hostel / property name</label>
+    <input id="setupHostel" placeholder="e.g. Blue Wave Hostel" />
+    <label>Your name (admin)</label>
+    <input id="setupAdmin" placeholder="e.g. Alex" />
+    <label>Choose an admin PIN (4–8 digits)</label>
+    <input id="setupPin" inputmode="numeric" maxlength="8" placeholder="e.g. 4821" />
+    <label>Confirm PIN</label>
+    <input id="setupPin2" inputmode="numeric" maxlength="8" />
+    <button class="btn-full" style="margin-top:16px" id="setupBtn">Create admin & continue</button>
+  </div>
+</div>
+
+<!-- ============ LOCK / PIN SWITCH SCREEN ============ -->
+<div id="lockScreen" class="wrap hidden">
+  <div class="brandbar center" id="lockBrand" style="justify-content:center">
+    <div><div class="name" id="lockName">Laundry</div><div class="sub">Staff terminal — locked</div></div>
+  </div>
+  <div class="card center">
+    <h2>Enter your PIN</h2>
+    <p class="hint">Each cashier has their own PIN. No full login needed.</p>
+    <div class="pindots" id="pinDots"></div>
+    <div id="pinMsg"></div>
+    <div class="pinpad" id="pinpad"></div>
+  </div>
+</div>
+
+<!-- ============ MAIN APP ============ -->
+<div id="app" class="hidden">
+  <div class="topbar">
+    <div class="topbar-inner">
+      <span class="name" id="topName">Laundry</span>
+      <span class="spacer"></span>
+      <span class="who">Signed in: <b id="whoName"></b> <span class="pill" id="whoRole"></span></span>
+      <button class="ghost small" id="lockBtn">🔒 Lock / switch</button>
+    </div>
+    <div class="tabs" id="tabs"></div>
+  </div>
+
+  <div class="wrap-wide" style="padding-top:18px">
+    <div id="view"></div>
+  </div>
+</div>
+
+<!-- generic modal host -->
+<div id="modalHost"></div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>
