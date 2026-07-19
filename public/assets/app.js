@@ -91,9 +91,36 @@ function shiftPing() {
     });
   } catch {}
 }
+// A distinct "new guest message" chime (two quick mid tones).
+function msgPing() {
+  if (state.muted || !_audioCtx) return;
+  try {
+    const t = _audioCtx.currentTime;
+    [660, 990].forEach((f, i) => {
+      const osc = _audioCtx.createOscillator();
+      const gain = _audioCtx.createGain();
+      osc.type = 'square'; osc.frequency.value = f;
+      const off = i * 0.13;
+      gain.gain.setValueAtTime(0.0001, t + off);
+      gain.gain.exponentialRampToValueAtTime(0.16, t + off + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + off + 0.10);
+      osc.connect(gain); gain.connect(_audioCtx.destination);
+      osc.start(t + off); osc.stop(t + off + 0.12);
+    });
+  } catch {}
+}
 function currentShiftType() {
   const h = new Date().getHours();
   return (h >= 6 && h < 14) ? 'AM' : (h >= 14 && h < 22) ? 'PM' : 'Night';
+}
+
+// Count unread guest messages so we can keep pinging until reception reads them.
+async function refreshUnread() {
+  if (!can('messageGuests')) { state.pendingMsg = 0; return; }
+  try {
+    const orders = await api('GET', '/orders');
+    state.pendingMsg = orders.reduce((n, o) => n + (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length, 0);
+  } catch { /* keep last value */ }
 }
 
 // ---------------- idle auto-lock (5 minutes) ----------------
@@ -253,20 +280,25 @@ async function enterApp() {
   ensureTopbarControls();
   resetIdle();
   state.knownOrderIds = null;
+  state.pendingMsg = 0;
   await refreshShift(); // load shift status before first render so the shift bar shows
+  await refreshUnread();
   buildTabs();
   selectTab('orders');
   checkShiftBoundary();
   if (state.pendingStartShift) { state.pendingStartShift = false; state._startHandover = true; openStartShift(); }
   if (state.poll) clearInterval(state.poll);
-  state.poll = setInterval(() => { if (['orders', 'messages'].includes(state.tab)) renderTab(true); }, 15000);
-  // Repeating alerts: keep pinging while any order awaits acceptance, and play the
-  // (distinct) shift-due chime while no shift is open. Also watch for shift boundary.
+  state.poll = setInterval(() => {
+    refreshUnread(); // watch guest messages even when not on the Messages tab
+    if (['orders', 'messages'].includes(state.tab)) renderTab(true);
+  }, 15000);
+  // Repeating alerts (priority: new order → unread message → no shift open).
   if (state.pingTimer) clearInterval(state.pingTimer);
   state.pingTick = 0;
   state.pingTimer = setInterval(() => {
     state.pingTick += 1;
     if (state.pendingNew > 0) ping();
+    else if (state.pendingMsg > 0) msgPing();
     else if (!(state.shift && state.shift.open) && state.pingTick % 2 === 0) shiftPing();
     checkShiftBoundary();
   }, 6000);
@@ -315,7 +347,7 @@ function shiftBarHtml() {
   return `<div class="shiftbar">
     <span>⚪ No shift open. Start one to record this handover.</span>
     <span class="spacer"></span>
-    <button class="small" onclick="openStartShift()">Start shift</button>
+    <button class="small secondary" onclick="openStartShift()">Start shift</button>
   </div>`;
 }
 function inProgressListHtml(list, withChecks) {
@@ -433,6 +465,9 @@ async function renderOrders(view, silent) {
     if (fresh.length) ping(); // immediate ping the moment one arrives
   }
   state.knownOrderIds = newIds;
+  if (can('messageGuests')) {
+    state.pendingMsg = orders.reduce((n, o) => n + (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length, 0);
+  }
 
   const cols = ['new', 'accepted', 'cleaning', 'ready'];
   const colTitle = { new: 'New — awaiting acceptance', accepted: 'Accepted', cleaning: 'Cleaning', ready: 'Ready for pickup' };
@@ -483,6 +518,11 @@ function paymentPref(o) {
 
 window.openOrder = async (id) => {
   const o = await api('GET', `/orders/${id}`);
+  // Viewing the order counts as reading any guest messages — stops the message ping.
+  if ((o.messages || []).some(m => m.sender === 'guest' && !m.readByStaff)) {
+    try { await api('POST', `/orders/${id}/read`); } catch {}
+    state.pendingMsg = Math.max(0, (state.pendingMsg || 0) - (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length);
+  }
   const canModify = o.status === 'new' ? can('acceptOrders') : can('modifyAccepted');
   const logs = (o.logs || []).slice().reverse().map(l => `<div class="log"><b>${esc(l.actor)}</b> <span class="muted">(${esc(l.role)})</span> — ${esc(l.detail)}<br><span class="muted" style="font-size:11px">${fmt(l.at)}</span></div>`).join('');
   const msgs = (o.messages || []).map(m => `<div class="msg ${m.sender}"><div class="who">${m.sender === 'staff' ? esc(m.staffName || 'Reception') : esc(o.guestName)} · ${fmt(m.at)}</div>${esc(m.text)}</div>`).join('') || '<p class="muted">No messages.</p>';
@@ -625,6 +665,7 @@ window.replyOrder = async (e, id) => { e.preventDefault(); const t = $('#replyIn
 async function renderMessages(view, silent) {
   const threads = await api('GET', '/threads');
   const totalUnread = threads.reduce((a, t) => a + t.unread, 0);
+  state.pendingMsg = totalUnread;
   setBadge('messages', totalUnread);
   view.innerHTML = `<h2>Guest messages ${totalUnread ? `<span class="pill">${totalUnread} unread</span>` : ''}</h2>
     <div class="grid">${threads.map(t => `

@@ -33,6 +33,7 @@ try {
 
   let r2 = await api('POST', '/api/orders', { body: { guestName: 'Efua P', guestEmail: 'efua@example.com', items: 30 } });
   const B = r2.body.id;
+  const Bpub = r2.body.publicId;
   r2 = await api('GET', `/api/orders/public/${r2.body.publicId}`);
   ok('default timing is pay-at-pickup', r2.body.paymentTiming === 'pickup' && r2.body.paymentMethod === null);
 
@@ -76,6 +77,16 @@ try {
   const yawAuth = await api('POST', '/api/auth/pin', { body: { pin: '4321' } });
   r = await api('POST', `/api/orders/${B}/revert`, { headers: H(yawAuth.body.token), body: {} });
   ok('cashier without reverseStatus blocked', r.status === 403, `got ${r.status}`);
+
+  section('Unread guest messages (drives the message ping)');
+  await api('POST', `/api/orders/public/${Bpub}/messages`, { body: { text: 'Is it ready yet?' } });
+  r = await api('GET', '/api/orders', { headers: H(adminT) });
+  let bOrder = r.body.find(o => o.id === B);
+  ok('order exposes unread guest message', bOrder.messages.some(m => m.sender === 'guest' && !m.readByStaff));
+  await api('POST', `/api/orders/${B}/read`, { headers: H(adminT) });
+  r = await api('GET', '/api/orders', { headers: H(adminT) });
+  bOrder = r.body.find(o => o.id === B);
+  ok('marking read clears the unread flag', bOrder.messages.every(m => m.readByStaff));
 
   section('Shift close (confirm laundry in progress, no cash)');
   r = await api('POST', '/api/shifts/close', { headers: H(adminT), body: { acknowledged: false } });
