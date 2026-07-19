@@ -79,15 +79,23 @@ button.small { padding: 7px 12px; font-size: 13px; }
 
 /* ---- staff app layout ---- */
 .topbar { background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; }
-.topbar-inner { max-width: 1180px; margin: 0 auto; display: flex; align-items: center; gap: 14px; padding: 10px 18px; }
+.topbar-inner { max-width: 1180px; margin: 0 auto; display: flex; align-items: center; gap: 10px; padding: 10px 18px; flex-wrap: wrap; row-gap: 8px; }
 .topbar .name { font-weight: 700; }
 .topbar .spacer { flex: 1; }
 .who { font-size: 13px; color: var(--muted); }
 .who b { color: var(--ink); }
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px 18px 0; max-width: 1180px; margin: 0 auto; }
-.tabs button { background: transparent; color: var(--muted); border-radius: 10px 10px 0 0; padding: 10px 16px; font-size: 14px; }
+.tabs { display: flex; gap: 4px; flex-wrap: nowrap; overflow-x: auto; padding: 6px 18px 0; max-width: 1180px; margin: 0 auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs button { background: transparent; color: var(--muted); border-radius: 10px 10px 0 0; padding: 10px 16px; font-size: 14px; flex: 0 0 auto; white-space: nowrap; }
 .tabs button.active { background: var(--card); color: var(--accent); box-shadow: 0 -1px 3px rgba(0,0,0,.04); }
 .tab-badge { background: var(--danger); color:#fff; border-radius: 999px; font-size: 11px; padding: 0 6px; margin-left: 6px; }
+
+/* wrapping toolbar (report controls, etc.) + horizontally scrollable tables */
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.toolbar > div { flex: 1 1 130px; }
+.toolbar button { flex: 0 0 auto; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap table.data { min-width: 560px; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
 .cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: start; }
@@ -134,6 +142,26 @@ table.data th { color: var(--muted); font-size: 12px; text-transform: uppercase;
 .log { font-size: 13px; color: var(--muted); border-left: 2px solid var(--line); padding: 4px 0 4px 12px; margin-left: 4px; }
 .log b { color: var(--ink); }
 
-.shiftbar { background: var(--secondary); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.shiftbar { background: var(--secondary); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .shiftbar .spacer { flex: 1; }
 .shiftbar b { color: var(--accent); }
+
+/* ---------- phone layout ---------- */
+@media (max-width: 640px) {
+  .wrap { padding: 16px 14px 56px; }
+  .wrap-wide { padding: 0 12px 56px; }
+  .card { padding: 18px; }
+  .topbar-inner { padding: 10px 12px; }
+  .topbar .name { font-size: 16px; }
+  .topbar .spacer { display: none; }             /* let controls sit next to the name and wrap */
+  .who { order: 3; flex-basis: 100%; }           /* signed-in line drops to its own row */
+  .tabs { padding: 6px 12px 0; }
+  .modal-bg { padding: 14px 10px; }
+  .modal { padding: 18px; border-radius: 12px; }
+  .row { flex-direction: column; gap: 0; }        /* stacked fields never overlap */
+  .cols { gap: 12px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .stat .v { font-size: 21px; }
+  .shiftbar { font-size: 14px; }
+  h2 { font-size: 18px; }
+}

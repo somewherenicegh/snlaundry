@@ -114,13 +114,21 @@ function currentShiftType() {
   return (h >= 6 && h < 14) ? 'AM' : (h >= 14 && h < 22) ? 'PM' : 'Night';
 }
 
-// Count unread guest messages so we can keep pinging until reception reads them.
-async function refreshUnread() {
-  if (!can('messageGuests')) { state.pendingMsg = 0; return; }
+// Refresh the alert counters (new orders, orders stuck past the threshold, unread
+// messages) even when the user is not on the Orders/Messages tab — these drive the
+// repeating chimes.
+async function refreshAlerts() {
   try {
     const orders = await api('GET', '/orders');
-    state.pendingMsg = orders.reduce((n, o) => n + (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length, 0);
-  } catch { /* keep last value */ }
+    state.pendingNew = orders.filter(o => o.status === 'new').length;
+    const thr = (state.settings?.stuckThresholdHours || 4) * 3600000;
+    state.pendingStuck = orders.filter(o => o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > thr).length;
+    state.pendingMsg = can('messageGuests')
+      ? orders.reduce((n, o) => n + (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length, 0)
+      : 0;
+    if (state.pendingStuck > (state._lastStuck || 0)) notifyBg('Order waiting too long', `${state.pendingStuck} accepted order(s) haven't moved in over ${state.settings?.stuckThresholdHours || 4}h`, 'stuck');
+    state._lastStuck = state.pendingStuck;
+  } catch { /* keep last values */ }
 }
 
 // ---------------- idle auto-lock (5 minutes) ----------------
@@ -337,24 +345,25 @@ async function enterApp() {
   ensureTopbarControls();
   resetIdle();
   state.knownOrderIds = null;
-  state.pendingMsg = 0;
+  state.pendingMsg = 0; state.pendingStuck = 0; state._lastStuck = 0;
   await refreshShift(); // load shift status before first render so the shift bar shows
-  await refreshUnread();
+  await refreshAlerts();
   buildTabs();
   selectTab('orders');
   checkShiftBoundary();
   if (state.pendingStartShift) { state.pendingStartShift = false; state._startHandover = true; openStartShift(); }
   if (state.poll) clearInterval(state.poll);
   state.poll = setInterval(() => {
-    refreshUnread(); // watch guest messages even when not on the Messages tab
+    refreshAlerts(); // watch new orders, stuck orders & messages even when off those tabs
     if (['orders', 'messages'].includes(state.tab)) renderTab(true);
   }, 15000);
-  // Repeating alerts (priority: new order → unread message → no shift open).
+  // Repeating alerts (priority: new order → stuck order → unread message → no shift open).
   if (state.pingTimer) clearInterval(state.pingTimer);
   state.pingTick = 0;
   state.pingTimer = setInterval(() => {
     state.pingTick += 1;
     if (state.pendingNew > 0) ping();
+    else if (state.pendingStuck > 0) ping();
     else if (state.pendingMsg > 0) msgPing();
     else if (!(state.shift && state.shift.open) && state.pingTick % 2 === 0) shiftPing();
     checkShiftBoundary();
@@ -532,6 +541,8 @@ async function renderOrders(view, silent) {
     if (fresh.length) { ping(); notifyBg('New laundry order', `${fresh.length} new order(s) awaiting acceptance`, 'new-order'); }
   }
   state.knownOrderIds = newIds;
+  const _thr = (state.settings?.stuckThresholdHours || 4) * 3600000;
+  state.pendingStuck = orders.filter(o => o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > _thr).length;
   if (can('messageGuests')) {
     state.pendingMsg = orders.reduce((n, o) => n + (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length, 0);
   }
@@ -549,13 +560,13 @@ async function renderOrders(view, silent) {
   view.innerHTML = `
     ${shiftBarHtml()}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h2 style="margin:0">Orders ${newCount ? `<span class="pill">${newCount} new</span>` : ''}</h2>
+      <h2 style="margin:0">Orders ${newCount ? `<span class="pill">${newCount} new</span>` : ''}${state.pendingStuck ? ` <span class="pill" style="background:#fbe4e0;color:#992d20">${state.pendingStuck} waiting &gt;${state.settings?.stuckThresholdHours || 4}h</span>` : ''}</h2>
       <button class="small secondary" onclick="location.reload()">↻ Refresh</button>
     </div>
     <div class="cols">${boards}</div>
     <h3 style="margin-top:26px;color:var(--muted)">Recently completed / cancelled</h3>
-    <table class="data"><thead><tr><th>#</th><th>Guest</th><th>Room</th><th>Items</th><th>Total</th><th>Status</th><th>When</th></tr></thead>
-    <tbody>${recent.map(o => `<tr style="cursor:pointer" onclick="openOrder('${o.id}')"><td>#${o.number}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '—')}</td><td>${o.items}</td><td>${money(o.price)}</td><td><span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span></td><td class="muted">${fmt(o.completedAt || o.updatedAt)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">None yet</td></tr>'}</tbody></table>`;
+    <div class="table-wrap"><table class="data"><thead><tr><th>#</th><th>Guest</th><th>Room</th><th>Items</th><th>Total</th><th>Status</th><th>When</th></tr></thead>
+    <tbody>${recent.map(o => `<tr onclick="openOrder('${o.id}')"><td>#${o.number}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '—')}</td><td>${o.items}</td><td>${money(o.price)}</td><td><span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span></td><td class="muted">${fmt(o.completedAt || o.updatedAt)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">None yet</td></tr>'}</tbody></table></div>`;
   window._orders = orders;
 }
 
@@ -751,11 +762,11 @@ async function renderReports(view) {
   const start = new Date(today); start.setDate(today.getDate() - 30);
   view.innerHTML = `<h2>Revenue reporting</h2>
     <div class="card">
-      <div class="row" style="align-items:flex-end">
+      <div class="toolbar">
         <div><label>From</label><input id="rpFrom" type="date" value="${toStr(start)}"></div>
         <div><label>To</label><input id="rpTo" type="date" value="${toStr(today)}"></div>
-        <div style="flex:0"><button onclick="loadReport()">Run</button></div>
-        ${can('exportReports') ? `<div style="flex:0"><button class="secondary" onclick="exportCsv()">CSV</button></div><div style="flex:0"><button class="secondary" onclick="exportPdf()">PDF</button></div>` : ''}
+        <button onclick="loadReport()">Run</button>
+        ${can('exportReports') ? `<button class="secondary" onclick="exportCsv()">CSV</button><button class="secondary" onclick="exportPdf()">PDF</button>` : ''}
       </div>
     </div>
     <div id="reportBody"></div>`;
@@ -787,15 +798,15 @@ window.loadReport = async () => {
       </div>`).join('') : '<p class="muted">No revenue in this range.</p>'}
     </div>
     <div class="card"><h3 style="margin-top:0">By shift</h3>
-      <table class="data"><thead><tr><th>Shift</th><th>Orders</th><th>Loads</th><th>Revenue</th><th>Collected</th></tr></thead>
-      <tbody>${['AM', 'PM', 'Night'].map(s => { const b = r.byShift[s]; return `<tr><td><b>${s}</b> <span class="muted">${SHIFT_TIME[s]}</span></td><td>${b.orders}</td><td>${b.loads}</td><td>${money(b.revenue)}</td><td>${money(b.collected)}</td></tr>`; }).join('')}</tbody></table>
+      <div class="table-wrap"><table class="data"><thead><tr><th>Shift</th><th>Orders</th><th>Loads</th><th>Revenue</th><th>Collected</th></tr></thead>
+      <tbody>${['AM', 'PM', 'Night'].map(s => { const b = r.byShift[s]; return `<tr><td><b>${s}</b> <span class="muted">${SHIFT_TIME[s]}</span></td><td>${b.orders}</td><td>${b.loads}</td><td>${money(b.revenue)}</td><td>${money(b.collected)}</td></tr>`; }).join('')}</tbody></table></div>
     </div>
     <div class="card"><h3 style="margin-top:0">By staff</h3>
-      <table class="data"><thead><tr><th>Staff</th><th>Accepted</th><th>Cleaned</th><th>Ready</th><th>Picked up</th><th>Payments</th><th>Collected</th></tr></thead>
-      <tbody>${(r.byStaff || []).map(s => `<tr><td>${esc(s.name)}</td><td>${s.accepted}</td><td>${s.cleaned}</td><td>${s.ready}</td><td>${s.completed}</td><td>${s.payments}</td><td>${money(s.collected)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No activity</td></tr>'}</tbody></table>
+      <div class="table-wrap"><table class="data"><thead><tr><th>Staff</th><th>Accepted</th><th>Cleaned</th><th>Ready</th><th>Picked up</th><th>Payments</th><th>Collected</th></tr></thead>
+      <tbody>${(r.byStaff || []).map(s => `<tr><td>${esc(s.name)}</td><td>${s.accepted}</td><td>${s.cleaned}</td><td>${s.ready}</td><td>${s.completed}</td><td>${s.payments}</td><td>${money(s.collected)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No activity</td></tr>'}</tbody></table></div>
     </div>
     <div class="card"><h3 style="margin-top:0">Orders in range (${r.orders.length})</h3>
-      <div style="overflow-x:auto"><table class="data"><thead><tr><th>#</th><th>Date</th><th>Shift</th><th>Guest</th><th>Room</th><th>Loads</th><th>Total</th><th>Payment</th><th>Accepted</th><th>Ready</th><th>Paid by</th><th>Status</th></tr></thead>
+      <div class="table-wrap"><table class="data"><thead><tr><th>#</th><th>Date</th><th>Shift</th><th>Guest</th><th>Room</th><th>Loads</th><th>Total</th><th>Payment</th><th>Accepted</th><th>Ready</th><th>Paid by</th><th>Status</th></tr></thead>
       <tbody>${r.orders.map(o => `<tr><td>#${o.number}</td><td>${fmt(o.acceptedAt || o.createdAt)}</td><td>${o.shift}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '—')}</td><td>${o.loads}</td><td>${money(o.price)}</td><td>${o.paymentStatus === 'paid' ? 'Paid (' + (o.paymentMethod || '') + ')' : 'Unpaid'}</td><td>${esc(nm(o.acceptedBy))}</td><td>${esc(nm(o.readyBy))}</td><td>${esc(nm(o.paidBy))}</td><td><span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span></td></tr>`).join('') || '<tr><td colspan="12" class="muted">None</td></tr>'}</tbody></table></div>
     </div>
     <div id="shiftHistory"></div>`;

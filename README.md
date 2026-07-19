@@ -44,7 +44,7 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - **Reverse** an order a stage (e.g. ready → cleaning) — admins and any cashier granted the *reverseStatus* permission.
 - Reports show **who** accepted / cleaned / marked ready / took payment, plus breakdowns **by shift** (AM 06–14, PM 14–22, Night 22–06) and **by staff**.
 - **Shift handovers:** opening *and* closing a shift lists the laundry currently in progress (with **unpaid items flagged**) and requires the receptionist to tick the items and acknowledge they've physically checked the laundry area. No cash counting.
-- **Three distinct reception chimes**, each repeating until resolved: a new-order ping (until every order is accepted), a new-message ping (until reception reads the guest message), and a start-a-shift chime (until a shift is open). **Only an admin can mute** the sound.
+- **Repeating reception chimes**, each until resolved: a new-order ping (until every order is accepted), the same urgent ping for orders **stuck past the threshold** (default 4h), a new-message ping (until reception reads it), and a calmer start-a-shift chime (until a shift is open). **Only an admin can mute** the sound.
 - **Auto-lock** after 5 minutes of inactivity.
 - **Shift-boundary lock:** when the clock crosses into a new shift period, the terminal locks and asks whether to start a new shift or continue the current one — continuing requires the PIN of the cashier who started that shift.
 - Orders are tagged by **room name** (e.g. *Duafe*), not room number.
