@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Place a Laundry Order</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Prata&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
@@ -30,6 +33,20 @@
         <label for="items">Number of items</label>
         <input id="items" name="items" type="number" min="1" step="1" required placeholder="e.g. 12" />
         <p class="muted" id="loadHint" style="font-size:12px;margin:6px 0 0"></p>
+
+        <label>Payment</label>
+        <div class="choice" id="timingChoice">
+          <label><input type="radio" name="timing" value="now" checked /><span>Pay now</span></label>
+          <label><input type="radio" name="timing" value="pickup" /><span>Pay at pickup</span></label>
+        </div>
+
+        <div id="methodRow">
+          <label>Pay now with</label>
+          <div class="choice">
+            <label><input type="radio" name="method" value="cash" checked /><span>Cash</span></label>
+            <label><input type="radio" name="method" value="card" /><span>Card</span></label>
+          </div>
+        </div>
 
         <label for="note">Anything we should know? <span class="muted">(optional)</span></label>
         <textarea id="note" name="note" placeholder="e.g. delicate items, room number, preferred pickup time"></textarea>

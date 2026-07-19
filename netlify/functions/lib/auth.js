@@ -55,7 +55,8 @@ export function verifyToken(token) {
 // ---- Permission catalogue (what each access level can toggle) ----
 export const PERMISSIONS = {
   acceptOrders: 'Accept new guest orders',
-  advanceStatus: 'Move orders through cleaning → ready → completed',
+  advanceStatus: 'Move orders forward (cleaning → ready → picked up)',
+  reverseStatus: 'Move orders backward (e.g. ready → cleaning)',
   modifyAccepted: 'Edit an order after it has been accepted',
   cancelOrders: 'Cancel / delete orders',
   takePayment: 'Record payments',
@@ -78,6 +79,7 @@ export function defaultCashierPermissions() {
   return {
     acceptOrders: true,
     advanceStatus: true,
+    reverseStatus: false, // admin-granted only by default
     modifyAccepted: false, // only admins by default — matches the requirement
     cancelOrders: false,
     takePayment: true,

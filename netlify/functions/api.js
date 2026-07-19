@@ -32,7 +32,7 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
 
   try {
     // ---------- meta / public ----------
-    if (parts[0] === 'health') return json(200, { ok: true, mode: await (await import('./lib/store.js')).storeMode() });
+    if (parts[0] === 'health') return json(200, { ok: true, storage: await (await import('./lib/store.js')).storeInfo() });
 
     if (parts[0] === 'status') {
       const settings = await L.getSettings();
@@ -105,6 +105,14 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
         const user = await requirePerm(headers, 'advanceStatus');
         return json(200, await L.advanceStatus(id, body.target, user));
       }
+      if (m === 'POST' && id && parts[2] === 'revert') {
+        const user = await requirePerm(headers, 'reverseStatus');
+        return json(200, await L.revertStatus(id, user, body.reason));
+      }
+      if (m === 'POST' && id && parts[2] === 'pay') {
+        const user = await requirePerm(headers, 'takePayment');
+        return json(200, await L.recordPayment(id, body.method, user));
+      }
       if (m === 'PATCH' && id) {
         // Modifying an order: if it is already accepted (or beyond), require modifyAccepted.
         const existing = await L.getOrder(id);
@@ -130,6 +138,29 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
     if (parts[0] === 'threads' && m === 'GET') {
       await requirePerm(headers, 'messageGuests');
       return json(200, await L.listThreads());
+    }
+
+    // ---------- shifts (till sessions) ----------
+    if (parts[0] === 'shifts') {
+      if (m === 'GET' && parts[1] === 'current') {
+        const payload = requireUser(headers);
+        const user = await L.getCashierById(payload.id);
+        return json(200, await L.currentShiftView(user));
+      }
+      if (m === 'POST' && parts[1] === 'open') {
+        const payload = requireUser(headers);
+        const user = await L.getCashierById(payload.id);
+        return json(201, await L.openShift(body, user));
+      }
+      if (m === 'POST' && parts[1] === 'close') {
+        const payload = requireUser(headers);
+        const user = await L.getCashierById(payload.id);
+        return json(200, await L.closeShift(body, user));
+      }
+      if (m === 'GET' && !parts[1]) {
+        await requirePerm(headers, 'viewReports');
+        return json(200, await L.listShifts(query));
+      }
     }
 
     // ---------- cashiers ----------
@@ -170,7 +201,8 @@ function guestView(o) {
   return {
     publicId: o.publicId, number: o.number, guestName: o.guestName,
     items: o.items, loads: o.loads, status: o.status, room: o.room,
-    price: o.price, paymentStatus: o.paymentStatus, pickupAt: o.pickupAt,
+    price: o.price, paymentStatus: o.paymentStatus, paymentTiming: o.paymentTiming,
+    paymentMethod: o.paymentMethod, pickupAt: o.pickupAt,
     createdAt: o.createdAt, acceptedAt: o.acceptedAt,
     messages: (o.messages || []).map((mm) => ({ sender: mm.sender, staffName: mm.staffName, text: mm.text, at: mm.at })),
   };

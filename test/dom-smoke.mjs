@@ -72,6 +72,7 @@ try {
   out.push('\n▶ Guest order page (order.js)');
   let w = await loadPage('order.html', 'order.js');
   ok('branding applied from settings', w.document.querySelector('#brandName').textContent === 'DOM Hostel', w.document.querySelector('#brandName').textContent);
+  ok('order form shows payment choice (timing + method)', w.document.querySelectorAll('input[name="timing"]').length === 2 && w.document.querySelectorAll('input[name="method"]').length === 2);
   w.document.querySelector('#items').value = '30';
   w.document.querySelector('#items').dispatchEvent(new w.Event('input'));
   ok('load hint computes 2 loads for 30 items', /2 loads/.test(w.document.querySelector('#loadHint').textContent), w.document.querySelector('#loadHint').textContent);
@@ -95,6 +96,12 @@ try {
   await sleep(60);
   ok('orders board rendered with the guest order', /Zoe Q/.test(w.document.querySelector('#view').innerHTML), 'no order in view');
   ok('new order shows Accept button', /Accept/.test(w.document.querySelector('#view').innerHTML));
+  ok('sound mute button present in topbar', !!w.document.querySelector('#muteBtn'));
+  ok('shift bar offers Start shift', /Start shift/.test(w.document.querySelector('#view').innerHTML));
+  // open the start-shift modal
+  w.openStartShift();
+  ok('start-shift modal has float + shift type', !!w.document.querySelector('#shFloat') && !!w.document.querySelector('#shType'));
+  w.closeModal();
 
   // open settings tab and verify currency + QR render
   [...w.document.querySelectorAll('#tabs button')].find(b => b.dataset.tab === 'settings').click();

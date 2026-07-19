@@ -11,17 +11,30 @@ const K_SETTINGS = 'settings';
 const K_CASHIERS = 'cashiers';
 const K_ORDERS = 'orders';
 const K_META = 'meta';
+const K_SHIFTS = 'shifts';
 
 export const STATUSES = ['new', 'accepted', 'cleaning', 'ready', 'completed', 'cancelled'];
 const FLOW = { accepted: 'cleaning', cleaning: 'ready', ready: 'completed' };
+const REVERSE = { completed: 'ready', ready: 'cleaning', cleaning: 'accepted' };
+
+// Which staff-attribution field records each stage transition.
+const STAGE_ACTOR_FIELD = { accepted: 'acceptedBy', cleaning: 'cleaningBy', ready: 'readyBy', completed: 'completedBy' };
+
+// Reception shift windows (local time). AM 06:00–13:59, PM 14:00–21:59, Night 22:00–05:59.
+export function shiftOf(date) {
+  const h = new Date(date).getHours();
+  if (h >= 6 && h < 14) return 'AM';
+  if (h >= 14 && h < 22) return 'PM';
+  return 'Night';
+}
 
 // ---------------------------------------------------------------- Settings ---
 export function defaultSettings() {
   return {
-    hostelName: '',
+    hostelName: 'somewhere nice',
     logoDataUrl: '',
-    accentColor: '#0f766e',
-    currency: { code: 'USD', symbol: '$' },
+    accentColor: '#5d3f15',
+    currency: { code: 'GHS', symbol: '₵' },
     pricePerLoad: 10,
     piecesPerLoad: 25,
     turnaroundHours: 24,
@@ -145,11 +158,15 @@ export function computeLoads(items, piecesPerLoad) {
   return Math.max(items > 0 ? 1 : 0, Math.ceil(n / Math.max(1, piecesPerLoad)));
 }
 
-export async function createOrder({ guestName, guestEmail, items, note }) {
+export async function createOrder({ guestName, guestEmail, items, note, paymentTiming, paymentMethod }) {
   if (!guestName || !String(guestName).trim()) throw httpError(400, 'Name is required');
   if (!validEmail(guestEmail)) throw httpError(400, 'A valid email is required');
   const n = Math.floor(Number(items));
   if (!n || n < 1) throw httpError(400, 'Number of items must be at least 1');
+
+  // Payment preference chosen by the guest at order time.
+  const timing = paymentTiming === 'now' ? 'now' : 'pickup';
+  const method = timing === 'now' ? (paymentMethod === 'card' ? 'card' : 'cash') : null;
 
   const settings = await getSettings();
   const orders = await getCollection(K_ORDERS);
@@ -168,8 +185,17 @@ export async function createOrder({ guestName, guestEmail, items, note }) {
     room: '',
     pickupAt: null,
     price: null,
-    paymentStatus: 'unpaid', // unpaid | paid
-    paymentMethod: null, // cash | card
+    paymentTiming: timing, // 'now' | 'pickup'  (guest's choice)
+    paymentMethod: method, // 'cash' | 'card' | null (guest's choice when paying now)
+    paymentStatus: 'unpaid', // unpaid | paid (reception records actual collection)
+    paidBy: null,
+    paidAt: null,
+    paidShiftId: null,
+    // staff attribution, filled as the order progresses
+    acceptedBy: null,
+    cleaningBy: null,
+    readyBy: null,
+    completedBy: null,
     note: note ? String(note).slice(0, 500) : '',
     messages: [],
     logs: [],
@@ -177,7 +203,8 @@ export async function createOrder({ guestName, guestEmail, items, note }) {
     acceptedAt: null,
     updatedAt: nowIso(),
   };
-  addLog(order, { name: order.guestName, role: 'guest' }, 'placed', `Guest placed order: ${n} item(s)`);
+  addLog(order, { name: order.guestName, role: 'guest' }, 'placed',
+    `Placed ${n} item(s) · ${timing === 'now' ? 'pay now (' + method + ')' : 'pay at pickup'}`);
   orders.push(order);
   await saveCollection(K_ORDERS, orders);
   return publicOrder(order);
@@ -210,6 +237,7 @@ export async function acceptOrder(id, data, actor) {
     if (o.status !== 'new') throw httpError(409, `Order already ${o.status}`);
     o.status = 'accepted';
     o.acceptedAt = nowIso();
+    o.acceptedBy = actorRef(actor);
     o.room = data.room ? String(data.room).trim() : o.room;
     o.loads = computeLoads(o.items, settings.piecesPerLoad);
     o.price = data.price != null && data.price !== ''
@@ -217,16 +245,12 @@ export async function acceptOrder(id, data, actor) {
       : o.loads * settings.pricePerLoad;
     // Default pickup = now + turnaround, unless reception picked one.
     o.pickupAt = data.pickupAt || new Date(Date.now() + settings.turnaroundHours * 3600000).toISOString();
-    if (data.paymentStatus === 'paid') {
-      o.paymentStatus = 'paid';
-      o.paymentMethod = data.paymentMethod === 'card' ? 'card' : 'cash';
-      o.paidAt = nowIso();
-    } else {
-      o.paymentStatus = 'unpaid';
-      o.paymentMethod = null;
-    }
     addLog(o, actor, 'accepted',
-      `Accepted · room ${o.room || '—'} · ${o.price} · ${o.paymentStatus}${o.paymentMethod ? ' (' + o.paymentMethod + ')' : ''} · ready by ${o.pickupAt}`);
+      `Accepted · room ${o.room || '—'} · ${settings.currency.symbol}${o.price} · ready by ${o.pickupAt}`);
+    // Reception may collect payment right at acceptance.
+    if (data.paymentStatus === 'paid') {
+      await applyPayment(o, data.paymentMethod, actor);
+    }
     await notifyGuest('accepted', o, settings);
     return o;
   });
@@ -238,7 +262,12 @@ export async function advanceStatus(id, target, actor) {
     const expected = FLOW[o.status];
     if (!expected) throw httpError(409, `Cannot advance from ${o.status}`);
     if (target && target !== expected) throw httpError(400, `Next stage must be ${expected}`);
+    // An order cannot be picked up (completed) before it has been paid.
+    if (expected === 'completed' && o.paymentStatus !== 'paid') {
+      throw httpError(409, 'Payment must be collected before the order can be marked picked up.');
+    }
     o.status = expected;
+    if (STAGE_ACTOR_FIELD[expected]) o[STAGE_ACTOR_FIELD[expected]] = actorRef(actor);
     if (expected === 'completed') o.completedAt = nowIso();
     addLog(o, actor, 'status', `Status → ${expected}`);
     if (['cleaning', 'ready', 'completed'].includes(expected)) {
@@ -246,6 +275,38 @@ export async function advanceStatus(id, target, actor) {
     }
     return o;
   });
+}
+
+// Move an order one stage backwards (e.g. ready → cleaning). Permission-gated at API.
+export async function revertStatus(id, actor, reason) {
+  return mutateOrder(id, async (o) => {
+    const prev = REVERSE[o.status];
+    if (!prev) throw httpError(409, `Cannot move ${o.status} backwards`);
+    const from = o.status;
+    o.status = prev;
+    if (from === 'completed') o.completedAt = null;
+    addLog(o, actor, 'reverted', `Moved back ${from} → ${prev}${reason ? ' · ' + reason : ''}`);
+    return o;
+  });
+}
+
+// Record that payment was collected. Used at acceptance or later.
+export async function recordPayment(id, method, actor) {
+  return mutateOrder(id, async (o) => {
+    if (o.paymentStatus === 'paid') throw httpError(409, 'Order is already paid');
+    await applyPayment(o, method, actor);
+    return o;
+  });
+}
+
+async function applyPayment(o, method, actor) {
+  o.paymentStatus = 'paid';
+  o.paymentMethod = method === 'card' ? 'card' : (method === 'cash' ? 'cash' : (o.paymentMethod || 'cash'));
+  o.paidAt = nowIso();
+  o.paidBy = actorRef(actor);
+  const shift = actor?.id ? await getOpenShiftFor(actor.id) : null;
+  o.paidShiftId = shift ? shift.id : null;
+  addLog(o, actor, 'payment', `Payment received · ${o.paymentMethod}${shift ? ' · shift ' + shift.type : ''}`);
 }
 
 export async function modifyOrder(id, patch, actor) {
@@ -266,12 +327,15 @@ export async function modifyOrder(id, patch, actor) {
     }
     if (patch.price != null && patch.price !== '') set('price', Math.max(0, Number(patch.price)), 'price');
     if (patch.pickupAt != null) set('pickupAt', patch.pickupAt, 'pickup');
+    if (patch.paymentTiming != null) set('paymentTiming', patch.paymentTiming === 'now' ? 'now' : 'pickup', 'timing');
     if (patch.paymentStatus != null) {
-      set('paymentStatus', patch.paymentStatus === 'paid' ? 'paid' : 'unpaid', 'payment');
-      o.paymentMethod = o.paymentStatus === 'paid'
-        ? (patch.paymentMethod === 'card' ? 'card' : 'cash')
-        : null;
-      if (o.paymentStatus === 'paid' && !o.paidAt) o.paidAt = nowIso();
+      if (patch.paymentStatus === 'paid' && o.paymentStatus !== 'paid') {
+        await applyPayment(o, patch.paymentMethod, actor);
+        changes.push('payment: unpaid → paid');
+      } else if (patch.paymentStatus !== 'paid' && o.paymentStatus === 'paid') {
+        o.paymentStatus = 'unpaid'; o.paidAt = null; o.paidBy = null; o.paidShiftId = null;
+        changes.push('payment: paid → unpaid');
+      }
     }
     if (changes.length) addLog(o, actor, 'modified', changes.join(' · '));
     return o;
@@ -375,6 +439,34 @@ export async function revenueReport({ from, to } = {}) {
   }
   const byDay = Object.values(byDayMap).sort((a, b) => a.date.localeCompare(b.date));
 
+  // Shift breakdown — categorized by the time the order was accepted.
+  const byShift = { AM: shiftBucket('AM'), PM: shiftBucket('PM'), Night: shiftBucket('Night') };
+  for (const o of inRange) {
+    const s = byShift[shiftOf(o.acceptedAt || o.createdAt)];
+    s.orders += 1; s.revenue += Number(o.price) || 0; s.loads += o.loads;
+    if (o.paymentStatus === 'paid') s.collected += Number(o.price) || 0;
+  }
+  Object.values(byShift).forEach((s) => { s.revenue = round2(s.revenue); s.collected = round2(s.collected); });
+
+  // Staff activity — who did what, and cash collected by whom.
+  const staff = {};
+  const bump = (ref, field, amount = 0) => {
+    if (!ref || !ref.name) return;
+    const k = ref.id || ref.name;
+    if (!staff[k]) staff[k] = { name: ref.name, accepted: 0, cleaned: 0, ready: 0, completed: 0, payments: 0, collected: 0 };
+    staff[k][field] += 1;
+    if (amount) staff[k].collected += amount;
+  };
+  for (const o of inRange) {
+    bump(o.acceptedBy, 'accepted');
+    bump(o.cleaningBy, 'cleaned');
+    bump(o.readyBy, 'ready');
+    bump(o.completedBy, 'completed');
+    if (o.paymentStatus === 'paid' && o.paidBy) bump(o.paidBy, 'payments', Number(o.price) || 0);
+  }
+  const byStaff = Object.values(staff).map((s) => ({ ...s, collected: round2(s.collected) }))
+    .sort((a, b) => b.collected - a.collected);
+
   return {
     currency: settings.currency,
     range: { from: from || null, to: to || null },
@@ -391,9 +483,13 @@ export async function revenueReport({ from, to } = {}) {
     },
     byMethod: { cash: round2(byMethod.cash), card: round2(byMethod.card) },
     byDay,
-    orders: inRange.map(publicOrder),
+    byShift,
+    byStaff,
+    orders: inRange.map((o) => ({ ...publicOrder(o), shift: shiftOf(o.acceptedAt || o.createdAt) })),
   };
 }
+
+function shiftBucket() { return { orders: 0, revenue: 0, collected: 0, loads: 0 }; }
 
 export function reportToCsv(report) {
   const cur = report.currency?.code || '';
@@ -415,17 +511,35 @@ export function reportToCsv(report) {
   lines.push('Date,Orders,Loads,Items,Revenue');
   report.byDay.forEach((d) => lines.push(`${d.date},${d.orders},${d.loads},${d.items},${round2(d.revenue)}`));
   lines.push('');
+  lines.push('By shift');
+  lines.push('Shift,Orders,Loads,Revenue,Collected');
+  ['AM', 'PM', 'Night'].forEach((s) => {
+    const b = report.byShift[s];
+    lines.push(`${s} (${SHIFT_LABEL[s]}),${b.orders},${b.loads},${b.revenue},${b.collected}`);
+  });
+  lines.push('');
+  lines.push('By staff');
+  lines.push('Staff,Accepted,Cleaned,Ready,Completed,Payments,Cash+Card collected');
+  (report.byStaff || []).forEach((s) => {
+    lines.push(`${csv(s.name)},${s.accepted},${s.cleaned},${s.ready},${s.completed},${s.payments},${s.collected}`);
+  });
+  lines.push('');
   lines.push('Orders');
-  lines.push('Number,Date,Guest,Room,Items,Loads,Price,Payment,Method,Status');
+  lines.push('Number,Date,Shift,Guest,Room,Items,Loads,Price,Payment,Method,Accepted by,Cleaned by,Ready by,Completed by,Paid by,Status');
   report.orders.forEach((o) => {
     lines.push([
-      o.number, (o.acceptedAt || o.createdAt).slice(0, 16).replace('T', ' '),
+      o.number, (o.acceptedAt || o.createdAt).slice(0, 16).replace('T', ' '), o.shift,
       csv(o.guestName), csv(o.room), o.items, o.loads, o.price ?? '',
-      o.paymentStatus, o.paymentMethod || '', o.status,
+      o.paymentStatus, o.paymentMethod || '',
+      csv(nameOf(o.acceptedBy)), csv(nameOf(o.cleaningBy)), csv(nameOf(o.readyBy)),
+      csv(nameOf(o.completedBy)), csv(nameOf(o.paidBy)), o.status,
     ].join(','));
   });
   return lines.join('\n');
 }
+
+const SHIFT_LABEL = { AM: '06:00–14:00', PM: '14:00–22:00', Night: '22:00–06:00' };
+function nameOf(ref) { return ref && ref.name ? ref.name : ''; }
 
 // ------------------------------------------------------- Stuck-order detection
 export async function findStuckOrders(settings) {
@@ -444,7 +558,79 @@ export async function markStuckAlerted(ids) {
   await saveCollection(K_ORDERS, orders);
 }
 
+// -------------------------------------------------------------- Shifts -------
+// A shift is a cashier's till session: they confirm the opening cash float and,
+// on close, the counted cash — the system reconciles it against cash collected.
+export async function getOpenShiftFor(cashierId) {
+  const shifts = await getCollection(K_SHIFTS);
+  return shifts.find((s) => s.cashierId === cashierId && s.status === 'open') || null;
+}
+
+export async function openShift({ type, openingFloat, note }, actor) {
+  if (!actor?.id) throw httpError(401, 'Sign in first');
+  if (await getOpenShiftFor(actor.id)) throw httpError(409, 'You already have an open shift — close it first.');
+  const shifts = await getCollection(K_SHIFTS);
+  const shift = {
+    id: newId('shf'),
+    cashierId: actor.id,
+    cashierName: actor.name,
+    type: ['AM', 'PM', 'Night'].includes(type) ? type : shiftOf(new Date()),
+    openingFloat: Math.max(0, Number(openingFloat) || 0),
+    openingNote: note ? String(note).slice(0, 300) : '',
+    openedAt: nowIso(),
+    status: 'open',
+    closedAt: null,
+    closingCash: null,
+    closingNote: '',
+  };
+  shifts.push(shift);
+  await saveCollection(K_SHIFTS, shifts);
+  return shift;
+}
+
+export async function closeShift({ closingCash, note }, actor) {
+  const shifts = await getCollection(K_SHIFTS);
+  const shift = shifts.find((s) => s.cashierId === actor.id && s.status === 'open');
+  if (!shift) throw httpError(404, 'You have no open shift.');
+  const cashCollected = await cashCollectedForShift(shift.id);
+  shift.status = 'closed';
+  shift.closedAt = nowIso();
+  shift.closingCash = Math.max(0, Number(closingCash) || 0);
+  shift.closingNote = note ? String(note).slice(0, 300) : '';
+  shift.cashCollected = round2(cashCollected);
+  shift.expectedCash = round2(shift.openingFloat + cashCollected);
+  shift.variance = round2(shift.closingCash - shift.expectedCash);
+  await saveCollection(K_SHIFTS, shifts);
+  return shift;
+}
+
+async function cashCollectedForShift(shiftId) {
+  const orders = await getCollection(K_ORDERS);
+  return sum(orders
+    .filter((o) => o.paidShiftId === shiftId && o.paymentMethod === 'cash')
+    .map((o) => Number(o.price) || 0));
+}
+
+export async function listShifts({ from, to } = {}) {
+  const shifts = await getCollection(K_SHIFTS);
+  const fromD = from ? new Date(from) : new Date(0);
+  const toD = to ? new Date(to) : new Date(8640000000000000);
+  return shifts
+    .filter((s) => { const d = new Date(s.openedAt); return d >= fromD && d <= toD; })
+    .sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
+}
+
+export async function currentShiftView(actor) {
+  const shift = actor?.id ? await getOpenShiftFor(actor.id) : null;
+  if (!shift) return { open: false };
+  return { open: true, shift, cashCollected: round2(await cashCollectedForShift(shift.id)) };
+}
+
 // -------------------------------------------------------------- internals ----
+function actorRef(actor) {
+  return actor ? { id: actor.id || null, name: actor.name || 'system', role: actor.role || 'system' } : null;
+}
+
 async function mutateOrder(id, fn) {
   const orders = await getCollection(K_ORDERS);
   const o = orders.find((x) => x.id === id);

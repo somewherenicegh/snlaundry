@@ -47,16 +47,25 @@ function notify(kind, text) {
 
 $('#items').addEventListener('input', updateLoadHint);
 
+// Show the cash/card choice only when "Pay now" is selected.
+document.querySelectorAll('input[name="timing"]').forEach((r) =>
+  r.addEventListener('change', () => {
+    $('#methodRow').style.display = document.querySelector('input[name="timing"]:checked').value === 'now' ? 'block' : 'none';
+  }));
+
 $('#orderForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = $('#submitBtn');
   btn.disabled = true; btn.textContent = 'Submitting…';
   $('#msg').innerHTML = '';
+  const timing = document.querySelector('input[name="timing"]:checked').value;
   const payload = {
     guestName: $('#name').value.trim(),
     guestEmail: $('#email').value.trim(),
     items: parseInt($('#items').value, 10),
     note: $('#note').value.trim(),
+    paymentTiming: timing,
+    paymentMethod: timing === 'now' ? document.querySelector('input[name="method"]:checked').value : null,
   };
   try {
     const res = await fetch('/api/orders', {

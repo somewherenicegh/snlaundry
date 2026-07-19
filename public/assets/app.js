@@ -15,6 +15,14 @@ const state = {
 };
 
 const STATUS_LABEL = { new: 'New', accepted: 'Accepted', cleaning: 'Cleaning', ready: 'Ready', completed: 'Completed', cancelled: 'Cancelled' };
+const REVERSE_LABEL = { completed: 'Ready', ready: 'Cleaning', cleaning: 'Accepted' };
+function attributionRows(o) {
+  const rows = [
+    ['Accepted by', o.acceptedBy], ['Cleaned by', o.cleaningBy],
+    ['Marked ready by', o.readyBy], ['Picked up by', o.completedBy],
+  ].filter(([, v]) => v && v.name);
+  return rows.map(([k, v]) => `<tr><td class="muted">${k}</td><td>${esc(v.name)}</td></tr>`).join('');
+}
 
 // ---------------- API ----------------
 async function api(method, path, body) {
@@ -32,6 +40,39 @@ function can(perm) {
   if (!state.user) return false;
   if (state.user.role === 'admin') return true;
   return !!state.perms[perm];
+}
+
+// ---------------- new-order ping ----------------
+let _audioCtx = null;
+state.muted = localStorage.getItem('laundry_muted') === '1';
+state.knownOrderIds = null; // set of order ids we've already seen
+
+function initAudio() {
+  if (_audioCtx) return;
+  try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+}
+function ping() {
+  if (state.muted || !_audioCtx) return;
+  try {
+    const t = _audioCtx.currentTime;
+    [880, 1320].forEach((freq, i) => {
+      const osc = _audioCtx.createOscillator();
+      const gain = _audioCtx.createGain();
+      osc.type = 'sine'; osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t + i * 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.28, t + i * 0.18 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.18 + 0.16);
+      osc.connect(gain); gain.connect(_audioCtx.destination);
+      osc.start(t + i * 0.18); osc.stop(t + i * 0.18 + 0.18);
+    });
+  } catch {}
+}
+function toggleMute() {
+  state.muted = !state.muted;
+  localStorage.setItem('laundry_muted', state.muted ? '1' : '0');
+  const b = document.getElementById('muteBtn');
+  if (b) b.textContent = state.muted ? '🔕 Muted' : '🔔 Sound on';
+  if (!state.muted) { initAudio(); ping(); }
 }
 
 // ---------------- helpers ----------------
@@ -120,18 +161,107 @@ function lock() {
 }
 
 // ---------------- app shell ----------------
-function enterApp() {
+async function enterApp() {
   hideAll(); $('#app').classList.remove('hidden');
+  initAudio(); // PIN entry is a user gesture, so audio is now allowed
   $('#topName').textContent = state.settings?.hostelName || 'Laundry';
   if (state.settings?.accentColor) document.documentElement.style.setProperty('--accent', state.settings.accentColor);
   $('#whoName').textContent = state.user.name;
   $('#whoRole').textContent = state.user.role;
   $('#lockBtn').onclick = lock;
+  ensureTopbarControls();
+  state.knownOrderIds = null;
+  await refreshShift(); // load till status before first render so the shift bar shows
   buildTabs();
   selectTab('orders');
   if (state.poll) clearInterval(state.poll);
   state.poll = setInterval(() => { if (['orders', 'messages'].includes(state.tab)) renderTab(true); }, 15000);
 }
+
+function ensureTopbarControls() {
+  if (document.getElementById('muteBtn')) return;
+  const lockBtn = $('#lockBtn');
+  const mute = document.createElement('button');
+  mute.id = 'muteBtn'; mute.className = 'ghost small';
+  mute.textContent = state.muted ? '🔕 Muted' : '🔔 Sound on';
+  mute.onclick = toggleMute;
+  lockBtn.parentNode.insertBefore(mute, lockBtn);
+}
+
+// ---------------- shift (till session) ----------------
+async function refreshShift() {
+  try { state.shift = await api('GET', '/shifts/current'); } catch { state.shift = { open: false }; }
+}
+function shiftBarHtml() {
+  const s = state.shift;
+  if (!s) return '';
+  if (s.open) {
+    return `<div class="shiftbar">
+      <span>🟢 <b>${s.shift.type} shift</b> open · opened ${fmt(s.shift.openedAt)} · float ${money(s.shift.openingFloat)} · cash in so far ${money(s.cashCollected)}</span>
+      <span class="spacer"></span>
+      <button class="small secondary" onclick="openCloseShift()">Close shift</button>
+    </div>`;
+  }
+  return `<div class="shiftbar">
+    <span>⚪ No shift open. Start one to record your opening cash float.</span>
+    <span class="spacer"></span>
+    <button class="small" onclick="openStartShift()">Start shift</button>
+  </div>`;
+}
+window.openStartShift = () => {
+  const now = new Date().getHours();
+  const guess = (now >= 6 && now < 14) ? 'AM' : (now >= 14 && now < 22) ? 'PM' : 'Night';
+  openModal(`
+    <button class="ghost small close" onclick="closeModal()">✕</button>
+    <h3>Start shift</h3>
+    <p class="hint">Confirm which shift you're starting and the cash you're starting with.</p>
+    <div id="shMsg"></div>
+    <label>Shift</label>
+    <select id="shType">
+      <option value="AM" ${guess === 'AM' ? 'selected' : ''}>AM (06:00–14:00)</option>
+      <option value="PM" ${guess === 'PM' ? 'selected' : ''}>PM (14:00–22:00)</option>
+      <option value="Night" ${guess === 'Night' ? 'selected' : ''}>Night (22:00–06:00)</option>
+    </select>
+    <label>Opening cash float (${cur()})</label>
+    <input id="shFloat" type="number" min="0" step="0.01" value="0">
+    <label>Note <span class="muted">(optional)</span></label>
+    <input id="shNote" placeholder="e.g. handover from PM">
+    <button class="btn-full" style="margin-top:16px" onclick="doStartShift()">Start shift</button>
+  `);
+};
+window.doStartShift = async () => {
+  try {
+    await api('POST', '/shifts/open', { type: $('#shType').value, openingFloat: $('#shFloat').value, note: $('#shNote').value.trim() });
+    closeModal(); await refreshShift(); renderTab();
+  } catch (e) { notice($('#shMsg'), 'err', e.message); }
+};
+window.openCloseShift = () => {
+  const s = state.shift.shift; const expected = state.shift.shift.openingFloat + (state.shift.cashCollected || 0);
+  openModal(`
+    <button class="ghost small close" onclick="closeModal()">✕</button>
+    <h3>Close ${s.type} shift</h3>
+    <p class="hint">Count your drawer and enter the cash total. We'll compare it to what's expected.</p>
+    <div id="shMsg"></div>
+    <table class="data" style="margin-bottom:10px">
+      <tr><td class="muted">Opening float</td><td style="text-align:right">${money(s.openingFloat)}</td></tr>
+      <tr><td class="muted">Cash collected this shift</td><td style="text-align:right">${money(state.shift.cashCollected || 0)}</td></tr>
+      <tr><td class="muted">Expected in drawer</td><td style="text-align:right"><b>${money(expected)}</b></td></tr>
+    </table>
+    <label>Counted cash in drawer (${cur()})</label>
+    <input id="clCash" type="number" min="0" step="0.01" value="${expected.toFixed(2)}">
+    <label>Note <span class="muted">(optional)</span></label>
+    <input id="clNote" placeholder="e.g. GHS 20 tip left in drawer">
+    <button class="btn-full" style="margin-top:16px" onclick="doCloseShift()">Close shift</button>
+  `);
+};
+window.doCloseShift = async () => {
+  try {
+    const r = await api('POST', '/shifts/close', { closingCash: $('#clCash').value, note: $('#clNote').value.trim() });
+    closeModal(); await refreshShift(); renderTab();
+    const v = r.variance;
+    alert(v === 0 ? 'Shift closed — drawer balances exactly. ✓' : `Shift closed. Variance: ${money(v)} (${v > 0 ? 'over' : 'short'}).`);
+  } catch (e) { notice($('#shMsg'), 'err', e.message); }
+};
 
 function buildTabs() {
   const tabs = [{ id: 'orders', label: 'Orders' }];
@@ -166,6 +296,14 @@ async function renderTab(silent) {
 // ---------------- ORDERS ----------------
 async function renderOrders(view, silent) {
   const orders = await api('GET', '/orders');
+  // Detect genuinely new orders → play the reception ping.
+  const newIds = orders.filter(o => o.status === 'new').map(o => o.id);
+  if (state.knownOrderIds !== null) {
+    const fresh = newIds.filter(id => !state.knownOrderIds.includes(id));
+    if (fresh.length) ping();
+  }
+  state.knownOrderIds = newIds;
+
   const cols = ['new', 'accepted', 'cleaning', 'ready'];
   const colTitle = { new: 'New — awaiting acceptance', accepted: 'Accepted', cleaning: 'Cleaning', ready: 'Ready for pickup' };
   const newCount = orders.filter(o => o.status === 'new').length;
@@ -177,6 +315,7 @@ async function renderOrders(view, silent) {
 
   const recent = orders.filter(o => ['completed', 'cancelled'].includes(o.status)).slice(0, 12);
   view.innerHTML = `
+    ${shiftBarHtml()}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <h2 style="margin:0">Orders ${newCount ? `<span class="pill">${newCount} new</span>` : ''}</h2>
       <button class="small secondary" onclick="location.reload()">↻ Refresh</button>
@@ -192,17 +331,24 @@ function orderCard(o) {
   const stuck = o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > (state.settings?.stuckThresholdHours || 4) * 3600000;
   const nextBtn = { accepted: 'Start cleaning', cleaning: 'Mark ready', ready: 'Mark picked up' }[o.status];
   const unread = (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length;
+  const unpaid = o.paymentStatus !== 'paid';
+  const blockPickup = o.status === 'ready' && unpaid; // can't complete until paid
   return `<div class="ocard" onclick="openOrder('${o.id}')">
     <div class="top"><span class="num">#${o.number}</span><span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span></div>
     <div>${esc(o.guestName)} ${o.room ? `· Room ${esc(o.room)}` : ''} ${unread ? `<span class="tab-badge">${unread}✉</span>` : ''}</div>
-    <div class="meta">${o.items} items · ${o.loads} load(s) · ${money(o.price)}</div>
+    <div class="meta">${o.items} items · ${o.loads} load(s) · ${money(o.price)} · ${o.status === 'new' ? paymentPref(o) : (unpaid ? '⚠ unpaid' : 'paid')}</div>
     <div class="meta">${o.status === 'new' ? 'Placed ' + ago(o.createdAt) : 'Ready by ' + fmt(o.pickupAt)}</div>
     ${stuck ? '<div class="meta" style="color:var(--danger);font-weight:600">⏰ waiting ' + ago(o.acceptedAt) + '</div>' : ''}
-    <div style="margin-top:10px" onclick="event.stopPropagation()">
+    <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
       ${o.status === 'new' && can('acceptOrders') ? `<button class="small" onclick="openAccept('${o.id}')">Accept</button>` : ''}
-      ${nextBtn && can('advanceStatus') ? `<button class="small" onclick="advance('${o.id}')">${nextBtn}</button>` : ''}
+      ${o.status !== 'new' && unpaid && can('takePayment') ? `<button class="small secondary" onclick="takePayment('${o.id}')">Take payment</button>` : ''}
+      ${nextBtn && can('advanceStatus') ? `<button class="small" ${blockPickup ? 'disabled title="Collect payment first"' : ''} onclick="advance('${o.id}')">${nextBtn}</button>` : ''}
     </div>
   </div>`;
+}
+function paymentPref(o) {
+  if (o.paymentTiming === 'now') return `pay now (${o.paymentMethod || 'cash'})`;
+  return 'pay at pickup';
 }
 
 window.openOrder = async (id) => {
@@ -220,14 +366,19 @@ window.openOrder = async (id) => {
       <tr><td class="muted">Room</td><td>${esc(o.room || '—')}</td></tr>
       <tr><td class="muted">Items / loads</td><td>${o.items} / ${o.loads}</td></tr>
       <tr><td class="muted">Total</td><td>${money(o.price)}</td></tr>
-      <tr><td class="muted">Payment</td><td>${o.paymentStatus === 'paid' ? 'Paid (' + (o.paymentMethod || '') + ')' : 'Pay at pickup'}</td></tr>
+      <tr><td class="muted">Payment</td><td>${o.paymentStatus === 'paid' ? 'Paid ✓ (' + (o.paymentMethod || '') + ')' + (o.paidBy ? ' · by ' + esc(o.paidBy.name) : '') : '⚠ Unpaid · guest chose ' + paymentPref(o)}</td></tr>
       <tr><td class="muted">Ready by</td><td>${fmt(o.pickupAt)}</td></tr>
       ${o.note ? `<tr><td class="muted">Note</td><td>${esc(o.note)}</td></tr>` : ''}
+      ${attributionRows(o)}
     </table>
     <div id="modalMsg"></div>
     <div class="stack" style="margin-top:12px">
       ${o.status === 'new' && can('acceptOrders') ? `<button onclick="openAccept('${o.id}')">Accept order…</button>` : ''}
-      ${nextBtn && can('advanceStatus') ? `<button onclick="advance('${o.id}', true)">${nextBtn}</button>` : ''}
+      ${o.status !== 'new' && o.paymentStatus !== 'paid' && can('takePayment') ? `<button onclick="takePayment('${o.id}')">Take payment (${money(o.price)})</button>` : ''}
+      ${nextBtn && can('advanceStatus') ? (o.status === 'ready' && o.paymentStatus !== 'paid'
+          ? `<button disabled title="Collect payment first">${nextBtn} — collect payment first</button>`
+          : `<button onclick="advance('${o.id}', true)">${nextBtn}</button>`) : ''}
+      ${REVERSE_LABEL[o.status] && can('reverseStatus') ? `<button class="secondary" onclick="revert('${o.id}', true)">↩ Move back to ${REVERSE_LABEL[o.status]}</button>` : ''}
       ${o.status !== 'new' && canModify ? `<button class="secondary" onclick="openModify('${o.id}')">Edit order</button>` : ''}
       ${o.status !== 'new' && o.status !== 'completed' && o.status !== 'cancelled' && !canModify ? `<p class="muted" style="font-size:13px">Only an admin can edit an accepted order.</p>` : ''}
       ${!['completed', 'cancelled'].includes(o.status) && can('cancelOrders') ? `<button class="danger" onclick="cancelOrder('${o.id}')">Cancel order</button>` : ''}
@@ -257,14 +408,14 @@ window.openAccept = async (id) => {
     <label>Price (${cur()})</label>
     <input id="acPrice" type="number" step="0.01" min="0" value="${est.toFixed(2)}">
     <p class="muted" style="font-size:12px;margin:6px 0 0">${o.loads} load(s) × ${money(state.settings?.pricePerLoad)} = ${money(est)} (editable).</p>
-    <label>Payment</label>
+    <label>Payment <span class="muted">— guest chose ${paymentPref(o)}</span></label>
     <select id="acPayStatus" onchange="document.getElementById('acMethodRow').style.display=this.value==='paid'?'block':'none'">
-      <option value="unpaid">Pay at pickup</option>
-      <option value="paid">Paid now</option>
+      <option value="unpaid" ${o.paymentTiming !== 'now' ? 'selected' : ''}>Not paid yet</option>
+      <option value="paid" ${o.paymentTiming === 'now' ? 'selected' : ''}>Collect payment now</option>
     </select>
-    <div id="acMethodRow" style="display:none">
+    <div id="acMethodRow" style="display:${o.paymentTiming === 'now' ? 'block' : 'none'}">
       <label>Method</label>
-      <select id="acMethod"><option value="cash">Cash</option><option value="card">Card</option></select>
+      <select id="acMethod"><option value="cash" ${o.paymentMethod !== 'card' ? 'selected' : ''}>Cash</option><option value="card" ${o.paymentMethod === 'card' ? 'selected' : ''}>Card</option></select>
     </div>
     <button class="btn-full" style="margin-top:16px" onclick="doAccept('${o.id}')">Accept & notify guest</button>
   `);
@@ -315,6 +466,29 @@ window.doModify = async (id) => {
 
 window.advance = async (id, close) => { try { await api('POST', `/orders/${id}/advance`, {}); if (close) closeModal(); renderTab(); } catch (e) { alert(e.message); } };
 window.cancelOrder = async (id) => { const reason = prompt('Reason for cancelling (optional):'); if (reason === null) return; try { await api('POST', `/orders/${id}/cancel`, { reason }); closeModal(); renderTab(); } catch (e) { alert(e.message); } };
+window.revert = async (id, close) => { if (!confirm('Move this order back one stage?')) return; try { await api('POST', `/orders/${id}/revert`, {}); if (close) closeModal(); renderTab(); } catch (e) { alert(e.message); } };
+window.takePayment = async (id) => {
+  const o = await api('GET', `/orders/${id}`);
+  openModal(`
+    <button class="ghost small close" onclick="closeModal()">✕</button>
+    <h3>Take payment · #${o.number}</h3>
+    <p class="hint">${esc(o.guestName)} · ${money(o.price)} · guest chose ${paymentPref(o)}</p>
+    <div id="payMsg"></div>
+    <label>Payment method</label>
+    <div class="choice">
+      <label><input type="radio" name="paym" value="cash" ${o.paymentMethod !== 'card' ? 'checked' : ''} /><span>Cash</span></label>
+      <label><input type="radio" name="paym" value="card" ${o.paymentMethod === 'card' ? 'checked' : ''} /><span>Card</span></label>
+    </div>
+    <button class="btn-full" style="margin-top:16px" onclick="doPay('${o.id}')">Record payment of ${money(o.price)}</button>
+  `);
+};
+window.doPay = async (id) => {
+  try {
+    const method = document.querySelector('input[name="paym"]:checked').value;
+    await api('POST', `/orders/${id}/pay`, { method });
+    closeModal(); await refreshShift(); renderTab();
+  } catch (e) { notice($('#payMsg'), 'err', e.message); }
+};
 window.replyOrder = async (e, id) => { e.preventDefault(); const t = $('#replyInput').value.trim(); if (!t) return false; try { await api('POST', `/orders/${id}/reply`, { text: t }); openOrder(id); } catch (err) { notice($('#modalMsg'), 'err', err.message); } return false; };
 
 // ---------------- MESSAGES ----------------
@@ -374,11 +548,31 @@ window.loadReport = async () => {
         <span style="width:90px;text-align:right;font-size:13px">${money(d.revenue)}</span>
       </div>`).join('') : '<p class="muted">No revenue in this range.</p>'}
     </div>
+    <div class="card"><h3 style="margin-top:0">By shift</h3>
+      <table class="data"><thead><tr><th>Shift</th><th>Orders</th><th>Loads</th><th>Revenue</th><th>Collected</th></tr></thead>
+      <tbody>${['AM', 'PM', 'Night'].map(s => { const b = r.byShift[s]; return `<tr><td><b>${s}</b> <span class="muted">${SHIFT_TIME[s]}</span></td><td>${b.orders}</td><td>${b.loads}</td><td>${money(b.revenue)}</td><td>${money(b.collected)}</td></tr>`; }).join('')}</tbody></table>
+    </div>
+    <div class="card"><h3 style="margin-top:0">By staff</h3>
+      <table class="data"><thead><tr><th>Staff</th><th>Accepted</th><th>Cleaned</th><th>Ready</th><th>Picked up</th><th>Payments</th><th>Collected</th></tr></thead>
+      <tbody>${(r.byStaff || []).map(s => `<tr><td>${esc(s.name)}</td><td>${s.accepted}</td><td>${s.cleaned}</td><td>${s.ready}</td><td>${s.completed}</td><td>${s.payments}</td><td>${money(s.collected)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No activity</td></tr>'}</tbody></table>
+    </div>
     <div class="card"><h3 style="margin-top:0">Orders in range (${r.orders.length})</h3>
-      <table class="data"><thead><tr><th>#</th><th>Date</th><th>Guest</th><th>Room</th><th>Loads</th><th>Total</th><th>Payment</th><th>Status</th></tr></thead>
-      <tbody>${r.orders.map(o => `<tr><td>#${o.number}</td><td>${fmt(o.acceptedAt || o.createdAt)}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '—')}</td><td>${o.loads}</td><td>${money(o.price)}</td><td>${o.paymentStatus === 'paid' ? 'Paid (' + (o.paymentMethod || '') + ')' : 'Unpaid'}</td><td><span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span></td></tr>`).join('') || '<tr><td colspan="8" class="muted">None</td></tr>'}</tbody></table>
-    </div>`;
+      <div style="overflow-x:auto"><table class="data"><thead><tr><th>#</th><th>Date</th><th>Shift</th><th>Guest</th><th>Room</th><th>Loads</th><th>Total</th><th>Payment</th><th>Accepted</th><th>Ready</th><th>Paid by</th><th>Status</th></tr></thead>
+      <tbody>${r.orders.map(o => `<tr><td>#${o.number}</td><td>${fmt(o.acceptedAt || o.createdAt)}</td><td>${o.shift}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '—')}</td><td>${o.loads}</td><td>${money(o.price)}</td><td>${o.paymentStatus === 'paid' ? 'Paid (' + (o.paymentMethod || '') + ')' : 'Unpaid'}</td><td>${esc(nm(o.acceptedBy))}</td><td>${esc(nm(o.readyBy))}</td><td>${esc(nm(o.paidBy))}</td><td><span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span></td></tr>`).join('') || '<tr><td colspan="12" class="muted">None</td></tr>'}</tbody></table></div>
+    </div>
+    <div id="shiftHistory"></div>`;
+  loadShiftHistory(from, to);
 };
+async function loadShiftHistory(from, to) {
+  let shifts = [];
+  try { shifts = await api('GET', `/shifts?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`); } catch { return; }
+  if (!shifts.length) return;
+  $('#shiftHistory').innerHTML = `<div class="card"><h3 style="margin-top:0">Shift history & cash reconciliation</h3>
+    <div style="overflow-x:auto"><table class="data"><thead><tr><th>Opened</th><th>Cashier</th><th>Shift</th><th>Opening float</th><th>Cash collected</th><th>Expected</th><th>Counted</th><th>Variance</th><th>Status</th></tr></thead>
+    <tbody>${shifts.map(s => `<tr><td>${fmt(s.openedAt)}</td><td>${esc(s.cashierName)}</td><td>${s.type}</td><td>${money(s.openingFloat)}</td><td>${s.cashCollected != null ? money(s.cashCollected) : '—'}</td><td>${s.expectedCash != null ? money(s.expectedCash) : '—'}</td><td>${s.closingCash != null ? money(s.closingCash) : '—'}</td><td style="color:${s.variance ? (s.variance < 0 ? 'var(--danger)' : 'var(--warn)') : 'inherit'}">${s.variance != null ? money(s.variance) : '—'}</td><td>${s.status === 'open' ? '<span class="pill">open</span>' : 'closed'}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+const SHIFT_TIME = { AM: '06:00–14:00', PM: '14:00–22:00', Night: '22:00–06:00' };
+function nm(ref) { return ref && ref.name ? ref.name : '—'; }
 window.exportCsv = async () => {
   const { from, to } = reportRange();
   const res = await fetch(`/api/report/csv?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: { authorization: `Bearer ${state.token}` } });
@@ -405,8 +599,12 @@ window.exportPdf = () => {
     </div>
     <h3>Daily</h3><table><tr><th>Date</th><th>Orders</th><th>Loads</th><th>Revenue</th></tr>
     ${r.byDay.map(d => `<tr><td>${d.date}</td><td>${d.orders}</td><td>${d.loads}</td><td>${money(d.revenue)}</td></tr>`).join('')}</table>
-    <h3>Orders</h3><table><tr><th>#</th><th>Guest</th><th>Room</th><th>Loads</th><th>Total</th><th>Payment</th></tr>
-    ${r.orders.map(o => `<tr><td>${o.number}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '')}</td><td>${o.loads}</td><td>${money(o.price)}</td><td>${o.paymentStatus}</td></tr>`).join('')}</table>
+    <h3>By shift</h3><table><tr><th>Shift</th><th>Orders</th><th>Loads</th><th>Revenue</th><th>Collected</th></tr>
+    ${['AM', 'PM', 'Night'].map(s => { const b = r.byShift[s]; return `<tr><td>${s} (${SHIFT_TIME[s]})</td><td>${b.orders}</td><td>${b.loads}</td><td>${money(b.revenue)}</td><td>${money(b.collected)}</td></tr>`; }).join('')}</table>
+    <h3>By staff</h3><table><tr><th>Staff</th><th>Accepted</th><th>Cleaned</th><th>Ready</th><th>Picked up</th><th>Payments</th><th>Collected</th></tr>
+    ${(r.byStaff || []).map(s => `<tr><td>${esc(s.name)}</td><td>${s.accepted}</td><td>${s.cleaned}</td><td>${s.ready}</td><td>${s.completed}</td><td>${s.payments}</td><td>${money(s.collected)}</td></tr>`).join('')}</table>
+    <h3>Orders</h3><table><tr><th>#</th><th>Shift</th><th>Guest</th><th>Room</th><th>Loads</th><th>Total</th><th>Payment</th><th>Accepted by</th><th>Paid by</th></tr>
+    ${r.orders.map(o => `<tr><td>${o.number}</td><td>${o.shift}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '')}</td><td>${o.loads}</td><td>${money(o.price)}</td><td>${o.paymentStatus}</td><td>${esc(nm(o.acceptedBy))}</td><td>${esc(nm(o.paidBy))}</td></tr>`).join('')}</table>
     <p style="color:#888;font-size:12px;margin-top:20px">Generated ${new Date().toLocaleString()}</p>
     <script>window.onload=()=>window.print()<\/script></body></html>`);
   w.document.close();

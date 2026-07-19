@@ -37,6 +37,15 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 
 **Pricing model:** flat price **per load**. Loads = ⌈items ÷ max-pieces-per-load⌉ (default max 25/load, admin-configurable). Reception can override the price on any order.
 
+**Also included**
+- Branded for *somewhere nice* (cream/brown, Prata + Roboto). Fully re-themeable in Settings.
+- Guest chooses payment at order time: **Pay now** (cash or card) or **Pay at pickup**.
+- An order **cannot be marked picked up until payment is collected**.
+- **Reverse** an order a stage (e.g. ready → cleaning) — admins and any cashier granted the *reverseStatus* permission.
+- Reports show **who** accepted / cleaned / marked ready / took payment, plus breakdowns **by shift** (AM 06–14, PM 14–22, Night 22–06) and **by staff**.
+- **Shift (till) sessions:** a receptionist opens a shift with an opening cash float and closes it with the counted cash; the app reconciles expected vs actual and logs the variance.
+- **Audible ping** at reception whenever a new order arrives (with a mute toggle).
+
 ---
 
 ## Deploy in ~10 minutes
@@ -88,6 +97,14 @@ Done. Guests scan the QR (or visit `/order`); staff work from `/app`.
 - To send to **any** guest address, verify your domain in Resend and set `EMAIL_FROM` to an address on that domain.
 - Before verifying a domain you can use `EMAIL_FROM="Laundry <onboarding@resend.dev>"`, but Resend's sandbox only delivers to your own signup email — fine for testing.
 - If `RESEND_API_KEY` is not set, the app still runs and logs emails as "dry-run" instead of sending (useful for local testing).
+
+### Can I send with a personal Gmail address?
+
+Not directly — Resend (like every reputable email service) will only send *from* a domain you can prove you own, and nobody can verify `gmail.com`. So `EMAIL_FROM=you@gmail.com` via Resend is not possible.
+
+The easy, recommended path: **verify a cheap domain you control** (you already own `hostelaccra.com` per your brand manual). In Resend → **Domains → Add domain**, add the DNS records they give you, and set `EMAIL_FROM="somewhere nice <info@hostelaccra.com>"`. Guests then get proper branded email and you keep Resend.
+
+If you truly only have a Gmail and no domain, the alternative is to **skip Resend and send through Gmail's own SMTP** using a Gmail *App Password* (Google Account → Security → 2-Step Verification → App passwords). That sends from your real Gmail but caps at ~500/day and can look less professional. This build ships with Resend; if you'd prefer the Gmail-SMTP route I can add it as a drop-in option.
 
 ---
 

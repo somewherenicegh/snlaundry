@@ -48,11 +48,17 @@ function renderDetails(o) {
     o.room ? ['Room', esc(o.room)] : null,
     ['Items', `${o.items} pcs · ${o.loads} load(s)`],
     o.price != null ? ['Total', `${cur}${Number(o.price).toFixed(2)}`] : null,
-    o.paymentStatus ? ['Payment', o.paymentStatus === 'paid' ? 'Paid ✓' : 'Pay at pickup'] : null,
+    ['Payment', paymentText(o)],
     o.pickupAt ? ['Ready by', fmt(o.pickupAt)] : null,
     ['Placed', fmt(o.createdAt)],
   ].filter(Boolean);
   return rows.map(([k, v]) => `<tr><td class="muted">${k}</td><td style="text-align:right;font-weight:600">${v}</td></tr>`).join('');
+}
+
+function paymentText(o) {
+  if (o.paymentStatus === 'paid') return `Paid ✓${o.paymentMethod ? ' (' + o.paymentMethod + ')' : ''}`;
+  if (o.paymentTiming === 'now') return `Pay now${o.paymentMethod ? ' — ' + o.paymentMethod : ''} (on drop-off)`;
+  return 'Pay at pickup';
 }
 
 function renderThread(messages) {
