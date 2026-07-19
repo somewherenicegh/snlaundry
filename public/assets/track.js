@@ -45,7 +45,7 @@ function renderDetails(o) {
   const cur = settings.currency?.symbol || '';
   const rows = [
     ['Guest', esc(o.guestName)],
-    o.room ? ['Room', esc(o.room)] : null,
+    o.room ? ['Room name', esc(o.room)] : null,
     ['Items', `${o.items} pcs · ${o.loads} load(s)`],
     o.price != null ? ['Total', `${cur}${Number(o.price).toFixed(2)}`] : null,
     ['Payment', paymentText(o)],

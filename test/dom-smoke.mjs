@@ -98,9 +98,9 @@ try {
   ok('new order shows Accept button', /Accept/.test(w.document.querySelector('#view').innerHTML));
   ok('sound mute button present in topbar', !!w.document.querySelector('#muteBtn'));
   ok('shift bar offers Start shift', /Start shift/.test(w.document.querySelector('#view').innerHTML));
-  // open the start-shift modal
+  // open the start-shift modal (laundry handover — no cash float)
   w.openStartShift();
-  ok('start-shift modal has float + shift type', !!w.document.querySelector('#shFloat') && !!w.document.querySelector('#shType'));
+  ok('start-shift modal has shift type + note (no cash float)', !!w.document.querySelector('#shType') && !!w.document.querySelector('#shNote') && !w.document.querySelector('#shFloat'));
   w.closeModal();
 
   // open settings tab and verify currency + QR render

@@ -38,13 +38,14 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 **Pricing model:** flat price **per load**. Loads = ⌈items ÷ max-pieces-per-load⌉ (default max 25/load, admin-configurable). Reception can override the price on any order.
 
 **Also included**
-- Branded for *somewhere nice* (cream/brown, Prata + Roboto). Fully re-themeable in Settings.
+- Clean neutral theme; colour, logo and name are all set in Settings.
 - Guest chooses payment at order time: **Pay now** (cash or card) or **Pay at pickup**.
 - An order **cannot be marked picked up until payment is collected**.
 - **Reverse** an order a stage (e.g. ready → cleaning) — admins and any cashier granted the *reverseStatus* permission.
 - Reports show **who** accepted / cleaned / marked ready / took payment, plus breakdowns **by shift** (AM 06–14, PM 14–22, Night 22–06) and **by staff**.
-- **Shift (till) sessions:** a receptionist opens a shift with an opening cash float and closes it with the counted cash; the app reconciles expected vs actual and logs the variance.
-- **Audible ping** at reception whenever a new order arrives (with a mute toggle).
+- **Shift handovers:** a receptionist opens a shift confirming the laundry already in progress, and closes it by ticking the in-progress items and acknowledging they've physically checked the laundry area (no cash counting).
+- **Repeating ping** at reception every few seconds while any order is still awaiting acceptance — it stops once every order is accepted. **Only an admin can mute** the sound.
+- Orders are tagged by **room name** (e.g. *Duafe*), not room number.
 
 ---
 
@@ -68,13 +69,16 @@ git push -u origin main
 3. Netlify Blobs and the scheduled "stuck order" function are enabled automatically — no extra steps.
 
 ### 3. Set environment variables
-In Netlify: **Site configuration → Environment variables → Add**:
+In Netlify: **Site configuration → Environment variables → Add**. Set `SESSION_SECRET` plus **one** email backend:
 
 | Key | Value |
 |-----|-------|
-| `RESEND_API_KEY` | Your key from [resend.com/api-keys](https://resend.com/api-keys) |
-| `EMAIL_FROM` | e.g. `Laundry <laundry@yourdomain.com>` (see email note below) |
 | `SESSION_SECRET` | A long random string. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `GMAIL_USER` | Your Gmail address (Gmail backend) |
+| `GMAIL_APP_PASSWORD` | A Gmail App Password — see "Sending with Gmail" below |
+| `EMAIL_FROM` | e.g. `somewhere nice <youraddress@gmail.com>` |
+
+(Prefer Resend instead? Set `RESEND_API_KEY` and leave the `GMAIL_*` vars blank.)
 
 Then **Deploys → Trigger deploy → Deploy site** so the variables take effect.
 
@@ -91,20 +95,28 @@ Done. Guests scan the QR (or visit `/order`); staff work from `/app`.
 
 ---
 
-## Email notes (Resend)
+## Email
 
-- Free tier covers 3,000 emails/month.
-- To send to **any** guest address, verify your domain in Resend and set `EMAIL_FROM` to an address on that domain.
-- Before verifying a domain you can use `EMAIL_FROM="Laundry <onboarding@resend.dev>"`, but Resend's sandbox only delivers to your own signup email — fine for testing.
-- If `RESEND_API_KEY` is not set, the app still runs and logs emails as "dry-run" instead of sending (useful for local testing).
+The app auto-selects a backend: **Gmail SMTP** if `GMAIL_USER` + `GMAIL_APP_PASSWORD` are set, otherwise **Resend** if `RESEND_API_KEY` is set, otherwise **dry-run** (logged only — handy for local testing).
 
-### Can I send with a personal Gmail address?
+### Sending with Gmail (App Password)
 
-Not directly — Resend (like every reputable email service) will only send *from* a domain you can prove you own, and nobody can verify `gmail.com`. So `EMAIL_FROM=you@gmail.com` via Resend is not possible.
+Gmail won't accept your normal password from an app, so you create a one-off **App Password**:
 
-The easy, recommended path: **verify a cheap domain you control** (you already own `hostelaccra.com` per your brand manual). In Resend → **Domains → Add domain**, add the DNS records they give you, and set `EMAIL_FROM="somewhere nice <info@hostelaccra.com>"`. Guests then get proper branded email and you keep Resend.
+1. Turn on **2-Step Verification**: [myaccount.google.com/security](https://myaccount.google.com/security). (App Passwords only appear once 2-Step is on.)
+2. Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), name it e.g. "Laundry", and click **Create**.
+3. Google shows a **16-character password** (four blocks of four). Copy it.
+4. In Netlify → **Environment variables**, set:
+   - `GMAIL_USER` = your Gmail address
+   - `GMAIL_APP_PASSWORD` = that 16-character password (spaces are fine)
+   - `EMAIL_FROM` = `somewhere nice <youraddress@gmail.com>`
+5. **Deploys → Trigger deploy → Deploy site.**
 
-If you truly only have a Gmail and no domain, the alternative is to **skip Resend and send through Gmail's own SMTP** using a Gmail *App Password* (Google Account → Security → 2-Step Verification → App passwords). That sends from your real Gmail but caps at ~500/day and can look less professional. This build ships with Resend; if you'd prefer the Gmail-SMTP route I can add it as a drop-in option.
+Notes: Gmail sends from your real address (no domain setup needed) but caps at roughly **500 emails/day**, which is plenty for a hostel. If Google ever rotates/revokes the App Password, just create a new one and update `GMAIL_APP_PASSWORD`.
+
+### Prefer Resend instead?
+
+Set `RESEND_API_KEY` (and leave the `GMAIL_*` vars blank). Resend needs a **verified domain** to send from your own address — e.g. verify `hostelaccra.com` in Resend → Domains, then set `EMAIL_FROM="somewhere nice <info@hostelaccra.com>"`. Its sandbox sender `onboarding@resend.dev` only delivers to your own Resend signup email.
 
 ---
 

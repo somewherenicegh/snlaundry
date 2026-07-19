@@ -1,8 +1,7 @@
-// Email delivery via Resend.
-//
-// If RESEND_API_KEY is not set (e.g. local dev / tests), emails are "dry-run":
-// they are logged and recorded but not actually sent. This lets everything be
-// tested without a live key.
+// Email delivery. Chooses a backend based on which env vars are set:
+//   1. Gmail SMTP  — if GMAIL_USER + GMAIL_APP_PASSWORD are set (uses nodemailer)
+//   2. Resend      — if RESEND_API_KEY is set
+//   3. Dry-run     — otherwise: logged/recorded but not actually sent (local/tests)
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
@@ -16,38 +15,57 @@ export function clearSentLog() {
 }
 
 export async function sendEmail({ to, subject, html, from }) {
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailPass = process.env.GMAIL_APP_PASSWORD;
   const apiKey = process.env.RESEND_API_KEY;
-  const sender = from || process.env.EMAIL_FROM || 'Laundry <onboarding@resend.dev>';
+  const sender = from || process.env.EMAIL_FROM
+    || (gmailUser ? `somewhere nice <${gmailUser}>` : 'Laundry <onboarding@resend.dev>');
   const record = { to, subject, from: sender, at: new Date().toISOString() };
 
-  if (!apiKey) {
-    record.dryRun = true;
-    _sentLog.push(record);
-    console.log(`[email:dry-run] to=${to} subject="${subject}"`);
-    return { ok: true, dryRun: true };
+  // 1) Gmail SMTP
+  if (gmailUser && gmailPass) {
+    try {
+      const nodemailer = (await import('nodemailer')).default;
+      const transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com', port: 465, secure: true,
+        auth: { user: gmailUser, pass: String(gmailPass).replace(/\s+/g, '') }, // app passwords display with spaces
+      });
+      const info = await transporter.sendMail({ from: sender, to, subject, html });
+      record.ok = true; record.id = info.messageId; record.via = 'gmail';
+      _sentLog.push(record);
+      return { ok: true, id: info.messageId, via: 'gmail' };
+    } catch (err) {
+      record.ok = false; record.error = String(err); record.via = 'gmail';
+      _sentLog.push(record);
+      return { ok: false, error: String(err) };
+    }
   }
 
-  try {
-    const res = await fetch(RESEND_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ from: sender, to: [to], subject, html }),
-    });
-    const data = await res.json().catch(() => ({}));
-    record.ok = res.ok;
-    record.id = data.id;
-    if (!res.ok) record.error = data;
-    _sentLog.push(record);
-    return { ok: res.ok, id: data.id, error: res.ok ? undefined : data };
-  } catch (err) {
-    record.ok = false;
-    record.error = String(err);
-    _sentLog.push(record);
-    return { ok: false, error: String(err) };
+  // 2) Resend
+  if (apiKey) {
+    try {
+      const res = await fetch(RESEND_ENDPOINT, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: sender, to: [to], subject, html }),
+      });
+      const data = await res.json().catch(() => ({}));
+      record.ok = res.ok; record.id = data.id; record.via = 'resend';
+      if (!res.ok) record.error = data;
+      _sentLog.push(record);
+      return { ok: res.ok, id: data.id, error: res.ok ? undefined : data };
+    } catch (err) {
+      record.ok = false; record.error = String(err); record.via = 'resend';
+      _sentLog.push(record);
+      return { ok: false, error: String(err) };
+    }
   }
+
+  // 3) Dry-run
+  record.dryRun = true;
+  _sentLog.push(record);
+  console.log(`[email:dry-run] to=${to} subject="${subject}"`);
+  return { ok: true, dryRun: true };
 }
 
 // ---- Branded templates ----

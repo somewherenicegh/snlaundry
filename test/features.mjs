@@ -36,13 +36,14 @@ try {
   r2 = await api('GET', `/api/orders/public/${r2.body.publicId}`);
   ok('default timing is pay-at-pickup', r2.body.paymentTiming === 'pickup' && r2.body.paymentMethod === null);
 
-  section('Shift: open with float');
-  r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM', openingFloat: 100 } });
-  ok('shift opens with float', r.status === 201 && r.body.openingFloat === 100 && r.body.type === 'AM');
-  r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM', openingFloat: 50 } });
+  section('Shift: open (laundry handover, no cash)');
+  r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM' } });
+  ok('shift opens', r.status === 201 && r.body.type === 'AM' && r.body.status === 'open');
+  ok('no cash fields on shift', r.body.openingFloat === undefined);
+  r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM' } });
   ok('cannot open a second shift', r.status === 409);
   r = await api('GET', '/api/shifts/current', { headers: H(adminT) });
-  ok('current shift reported open', r.body.open === true);
+  ok('current shift reports open + in-progress list', r.body.open === true && Array.isArray(r.body.inProgress));
 
   section('Accept + paid-before-pickup rule');
   await api('POST', `/api/orders/${A}/accept`, { headers: H(adminT), body: { room: '5' } }); // not collecting yet
@@ -72,13 +73,15 @@ try {
   r = await api('POST', `/api/orders/${B}/revert`, { headers: H(yawAuth.body.token), body: {} });
   ok('cashier without reverseStatus blocked', r.status === 403, `got ${r.status}`);
 
-  section('Shift close + reconciliation');
-  // Expected cash = float 100 + cash collected (order A = 10) = 110.
-  r = await api('POST', '/api/shifts/close', { headers: H(adminT), body: { closingCash: 110 } });
-  ok('shift closes', r.status === 200 && r.body.status === 'closed');
-  ok('cash collected computed = 10', r.body.cashCollected === 10, `got ${r.body.cashCollected}`);
-  ok('expected = 110', r.body.expectedCash === 110, `got ${r.body.expectedCash}`);
-  ok('variance = 0 when counted matches', r.body.variance === 0, `got ${r.body.variance}`);
+  section('Shift close (confirm laundry in progress, no cash)');
+  r = await api('POST', '/api/shifts/close', { headers: H(adminT), body: { acknowledged: false } });
+  ok('close blocked without acknowledgement', r.status === 400, `got ${r.status}`);
+  // Order B is in progress (accepted) at this point; confirm it.
+  r = await api('POST', '/api/shifts/close', { headers: H(adminT), body: { acknowledged: true, confirmedOrderIds: [B], note: 'all present' } });
+  ok('shift closes with acknowledgement', r.status === 200 && r.body.status === 'closed' && r.body.acknowledged === true, JSON.stringify(r.body.error || ''));
+  ok('records confirmed laundry items', r.body.confirmedOrderIds.includes(B));
+  ok('records in-progress count at close', typeof r.body.closingInProgress === 'number');
+  ok('no cash fields recorded', r.body.closingCash === undefined && r.body.variance === undefined);
 
   section('Report: shift + staff breakdowns');
   r = await api('GET', '/api/report', { headers: H(adminT) });
@@ -93,7 +96,7 @@ try {
 
   section('Shift history endpoint');
   r = await api('GET', '/api/shifts', { headers: H(adminT) });
-  ok('shift history lists the closed shift', r.status === 200 && r.body.length === 1 && r.body[0].variance === 0);
+  ok('shift history lists the closed shift', r.status === 200 && r.body.length === 1 && r.body[0].acknowledged === true);
 } catch (err) {
   fail++; out.push(`\n💥 ${err.stack || err}`);
 }

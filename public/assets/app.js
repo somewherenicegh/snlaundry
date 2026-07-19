@@ -157,6 +157,8 @@ async function afterAuth(auth) {
 function lock() {
   state.token = null; state.user = null; localStorage.removeItem(TOKEN_KEY);
   if (state.poll) clearInterval(state.poll);
+  if (state.pingTimer) clearInterval(state.pingTimer);
+  state.pendingNew = 0;
   showLock();
 }
 
@@ -176,14 +178,20 @@ async function enterApp() {
   selectTab('orders');
   if (state.poll) clearInterval(state.poll);
   state.poll = setInterval(() => { if (['orders', 'messages'].includes(state.tab)) renderTab(true); }, 15000);
+  // Keep pinging while any order is still awaiting acceptance.
+  if (state.pingTimer) clearInterval(state.pingTimer);
+  state.pingTimer = setInterval(() => { if (state.pendingNew > 0) ping(); }, 6000);
 }
 
 function ensureTopbarControls() {
-  if (document.getElementById('muteBtn')) return;
+  // Rebuild each login: only an admin may toggle the new-order sound.
+  const existing = document.getElementById('muteBtn');
+  if (existing) existing.remove();
+  if (state.user.role !== 'admin') return;
   const lockBtn = $('#lockBtn');
   const mute = document.createElement('button');
   mute.id = 'muteBtn'; mute.className = 'ghost small';
-  mute.textContent = state.muted ? '🔕 Muted' : '🔔 Sound on';
+  mute.textContent = state.muted ? '🔕 Sound off' : '🔔 Sound on';
   mute.onclick = toggleMute;
   lockBtn.parentNode.insertBefore(mute, lockBtn);
 }
@@ -195,26 +203,37 @@ async function refreshShift() {
 function shiftBarHtml() {
   const s = state.shift;
   if (!s) return '';
+  const ip = (s.inProgress || []).length;
   if (s.open) {
     return `<div class="shiftbar">
-      <span>🟢 <b>${s.shift.type} shift</b> open · opened ${fmt(s.shift.openedAt)} · float ${money(s.shift.openingFloat)} · cash in so far ${money(s.cashCollected)}</span>
+      <span>🟢 <b>${s.shift.type} shift</b> open · since ${fmt(s.shift.openedAt)} · <b>${ip}</b> laundry order(s) in progress</span>
       <span class="spacer"></span>
       <button class="small secondary" onclick="openCloseShift()">Close shift</button>
     </div>`;
   }
   return `<div class="shiftbar">
-    <span>⚪ No shift open. Start one to record your opening cash float.</span>
+    <span>⚪ No shift open. Start one to record this handover.</span>
     <span class="spacer"></span>
     <button class="small" onclick="openStartShift()">Start shift</button>
+  </div>`;
+}
+function inProgressListHtml(list, withChecks) {
+  if (!list.length) return '<p class="muted" style="font-size:13px">No laundry currently in progress.</p>';
+  return `<div class="stack" style="max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:10px">
+    ${list.map(o => `<label style="display:flex;gap:9px;align-items:center;font-weight:400;margin:0">
+      ${withChecks ? `<input type="checkbox" class="ipchk" value="${o.id}" checked style="width:auto">` : ''}
+      <span>#${o.number} · ${esc(o.guestName)}${o.room ? ' · ' + esc(o.room) : ''} · <span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span> · ${o.items} item(s)</span>
+    </label>`).join('')}
   </div>`;
 }
 window.openStartShift = () => {
   const now = new Date().getHours();
   const guess = (now >= 6 && now < 14) ? 'AM' : (now >= 14 && now < 22) ? 'PM' : 'Night';
+  const ip = state.shift?.inProgress || [];
   openModal(`
     <button class="ghost small close" onclick="closeModal()">✕</button>
     <h3>Start shift</h3>
-    <p class="hint">Confirm which shift you're starting and the cash you're starting with.</p>
+    <p class="hint">Confirm which shift you're starting. You're taking over ${ip.length} laundry order(s) currently in progress.</p>
     <div id="shMsg"></div>
     <label>Shift</label>
     <select id="shType">
@@ -222,44 +241,44 @@ window.openStartShift = () => {
       <option value="PM" ${guess === 'PM' ? 'selected' : ''}>PM (14:00–22:00)</option>
       <option value="Night" ${guess === 'Night' ? 'selected' : ''}>Night (22:00–06:00)</option>
     </select>
-    <label>Opening cash float (${cur()})</label>
-    <input id="shFloat" type="number" min="0" step="0.01" value="0">
+    <label>Laundry you're starting with</label>
+    ${inProgressListHtml(ip, false)}
     <label>Note <span class="muted">(optional)</span></label>
-    <input id="shNote" placeholder="e.g. handover from PM">
+    <input id="shNote" placeholder="e.g. handover from PM shift">
     <button class="btn-full" style="margin-top:16px" onclick="doStartShift()">Start shift</button>
   `);
 };
 window.doStartShift = async () => {
   try {
-    await api('POST', '/shifts/open', { type: $('#shType').value, openingFloat: $('#shFloat').value, note: $('#shNote').value.trim() });
+    await api('POST', '/shifts/open', { type: $('#shType').value, note: $('#shNote').value.trim() });
     closeModal(); await refreshShift(); renderTab();
   } catch (e) { notice($('#shMsg'), 'err', e.message); }
 };
 window.openCloseShift = () => {
-  const s = state.shift.shift; const expected = state.shift.shift.openingFloat + (state.shift.cashCollected || 0);
+  const s = state.shift.shift; const ip = state.shift.inProgress || [];
   openModal(`
     <button class="ghost small close" onclick="closeModal()">✕</button>
     <h3>Close ${s.type} shift</h3>
-    <p class="hint">Count your drawer and enter the cash total. We'll compare it to what's expected.</p>
+    <p class="hint">Walk the laundry area and confirm the items below are physically present, then acknowledge.</p>
     <div id="shMsg"></div>
-    <table class="data" style="margin-bottom:10px">
-      <tr><td class="muted">Opening float</td><td style="text-align:right">${money(s.openingFloat)}</td></tr>
-      <tr><td class="muted">Cash collected this shift</td><td style="text-align:right">${money(state.shift.cashCollected || 0)}</td></tr>
-      <tr><td class="muted">Expected in drawer</td><td style="text-align:right"><b>${money(expected)}</b></td></tr>
-    </table>
-    <label>Counted cash in drawer (${cur()})</label>
-    <input id="clCash" type="number" min="0" step="0.01" value="${expected.toFixed(2)}">
-    <label>Note <span class="muted">(optional)</span></label>
-    <input id="clNote" placeholder="e.g. GHS 20 tip left in drawer">
+    <label>Laundry in progress (${ip.length})</label>
+    ${inProgressListHtml(ip, true)}
+    <label style="display:flex;gap:9px;align-items:flex-start;font-weight:400;margin-top:14px">
+      <input type="checkbox" id="ackChk" style="width:auto;margin-top:3px">
+      <span>I have checked the laundry area and confirm these items are physically present.</span>
+    </label>
+    <label>Handover note <span class="muted">(optional)</span></label>
+    <input id="clNote" placeholder="e.g. Duafe order needs re-wash">
     <button class="btn-full" style="margin-top:16px" onclick="doCloseShift()">Close shift</button>
   `);
 };
 window.doCloseShift = async () => {
+  if (!$('#ackChk').checked) return notice($('#shMsg'), 'err', 'Please tick the box to confirm you checked the laundry area.');
+  const confirmedOrderIds = [...document.querySelectorAll('.ipchk:checked')].map(c => c.value);
   try {
-    const r = await api('POST', '/shifts/close', { closingCash: $('#clCash').value, note: $('#clNote').value.trim() });
+    await api('POST', '/shifts/close', { acknowledged: true, confirmedOrderIds, note: $('#clNote').value.trim() });
     closeModal(); await refreshShift(); renderTab();
-    const v = r.variance;
-    alert(v === 0 ? 'Shift closed — drawer balances exactly. ✓' : `Shift closed. Variance: ${money(v)} (${v > 0 ? 'over' : 'short'}).`);
+    alert('Shift closed — laundry handover confirmed. ✓');
   } catch (e) { notice($('#shMsg'), 'err', e.message); }
 };
 
@@ -298,9 +317,10 @@ async function renderOrders(view, silent) {
   const orders = await api('GET', '/orders');
   // Detect genuinely new orders → play the reception ping.
   const newIds = orders.filter(o => o.status === 'new').map(o => o.id);
+  state.pendingNew = newIds.length; // drives the repeating ping until all are accepted
   if (state.knownOrderIds !== null) {
     const fresh = newIds.filter(id => !state.knownOrderIds.includes(id));
-    if (fresh.length) ping();
+    if (fresh.length) ping(); // immediate ping the moment one arrives
   }
   state.knownOrderIds = newIds;
 
@@ -363,7 +383,7 @@ window.openOrder = async (id) => {
     <table class="data">
       <tr><td class="muted">Guest</td><td>${esc(o.guestName)}</td></tr>
       <tr><td class="muted">Email</td><td>${esc(o.guestEmail)}</td></tr>
-      <tr><td class="muted">Room</td><td>${esc(o.room || '—')}</td></tr>
+      <tr><td class="muted">Room name</td><td>${esc(o.room || '—')}</td></tr>
       <tr><td class="muted">Items / loads</td><td>${o.items} / ${o.loads}</td></tr>
       <tr><td class="muted">Total</td><td>${money(o.price)}</td></tr>
       <tr><td class="muted">Payment</td><td>${o.paymentStatus === 'paid' ? 'Paid ✓ (' + (o.paymentMethod || '') + ')' + (o.paidBy ? ' · by ' + esc(o.paidBy.name) : '') : '⚠ Unpaid · guest chose ' + paymentPref(o)}</td></tr>
@@ -400,8 +420,8 @@ window.openAccept = async (id) => {
     <h3>Accept order #${o.number}</h3>
     <p class="hint">${esc(o.guestName)} · ${o.items} items · ${o.loads} load(s)</p>
     <div id="acceptMsg"></div>
-    <label>Room number</label>
-    <input id="acRoom" placeholder="e.g. 204" value="${esc(o.room || '')}">
+    <label>Room name</label>
+    <input id="acRoom" placeholder="e.g. Duafe" value="${esc(o.room || '')}">
     <label>Ready for pickup</label>
     <input id="acPickup" type="datetime-local" value="${pickupDefault}">
     <p class="muted" style="font-size:12px;margin:6px 0 0">Standard turnaround is ${state.settings?.turnaroundHours || 24}h — adjust if needed.</p>
@@ -437,7 +457,7 @@ window.openModify = async (id) => {
     <button class="ghost small close" onclick="closeModal()">✕</button>
     <h3>Edit order #${o.number}</h3>
     <div id="modMsg"></div>
-    <label>Room</label><input id="mdRoom" value="${esc(o.room || '')}">
+    <label>Room name</label><input id="mdRoom" placeholder="e.g. Duafe" value="${esc(o.room || '')}">
     <label>Items</label><input id="mdItems" type="number" min="1" value="${o.items}">
     <label>Price (${cur()})</label><input id="mdPrice" type="number" step="0.01" min="0" value="${o.price ?? ''}">
     <label>Ready by</label><input id="mdPickup" type="datetime-local" value="${o.pickupAt ? toLocalInput(o.pickupAt) : ''}">
@@ -567,9 +587,9 @@ async function loadShiftHistory(from, to) {
   let shifts = [];
   try { shifts = await api('GET', `/shifts?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`); } catch { return; }
   if (!shifts.length) return;
-  $('#shiftHistory').innerHTML = `<div class="card"><h3 style="margin-top:0">Shift history & cash reconciliation</h3>
-    <div style="overflow-x:auto"><table class="data"><thead><tr><th>Opened</th><th>Cashier</th><th>Shift</th><th>Opening float</th><th>Cash collected</th><th>Expected</th><th>Counted</th><th>Variance</th><th>Status</th></tr></thead>
-    <tbody>${shifts.map(s => `<tr><td>${fmt(s.openedAt)}</td><td>${esc(s.cashierName)}</td><td>${s.type}</td><td>${money(s.openingFloat)}</td><td>${s.cashCollected != null ? money(s.cashCollected) : '—'}</td><td>${s.expectedCash != null ? money(s.expectedCash) : '—'}</td><td>${s.closingCash != null ? money(s.closingCash) : '—'}</td><td style="color:${s.variance ? (s.variance < 0 ? 'var(--danger)' : 'var(--warn)') : 'inherit'}">${s.variance != null ? money(s.variance) : '—'}</td><td>${s.status === 'open' ? '<span class="pill">open</span>' : 'closed'}</td></tr>`).join('')}</tbody></table></div></div>`;
+  $('#shiftHistory').innerHTML = `<div class="card"><h3 style="margin-top:0">Shift handover history</h3>
+    <div style="overflow-x:auto"><table class="data"><thead><tr><th>Opened</th><th>Cashier</th><th>Shift</th><th>Closed</th><th>In progress at close</th><th>Items confirmed</th><th>Area checked</th><th>Note</th><th>Status</th></tr></thead>
+    <tbody>${shifts.map(s => `<tr><td>${fmt(s.openedAt)}</td><td>${esc(s.cashierName)}</td><td>${s.type}</td><td>${s.closedAt ? fmt(s.closedAt) : '—'}</td><td>${s.closingInProgress != null ? s.closingInProgress : '—'}</td><td>${(s.confirmedOrderIds || []).length || '—'}</td><td>${s.acknowledged ? '✓ Yes' : '—'}</td><td>${esc(s.closingNote || s.openingNote || '')}</td><td>${s.status === 'open' ? '<span class="pill">open</span>' : 'closed'}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 const SHIFT_TIME = { AM: '06:00–14:00', PM: '14:00–22:00', Night: '22:00–06:00' };
 function nm(ref) { return ref && ref.name ? ref.name : '—'; }

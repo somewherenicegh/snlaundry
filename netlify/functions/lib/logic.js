@@ -33,7 +33,7 @@ export function defaultSettings() {
   return {
     hostelName: 'somewhere nice',
     logoDataUrl: '',
-    accentColor: '#5d3f15',
+    accentColor: '#0f766e',
     currency: { code: 'GHS', symbol: '₵' },
     pricePerLoad: 10,
     piecesPerLoad: 25,
@@ -559,56 +559,61 @@ export async function markStuckAlerted(ids) {
 }
 
 // -------------------------------------------------------------- Shifts -------
-// A shift is a cashier's till session: they confirm the opening cash float and,
-// on close, the counted cash — the system reconciles it against cash collected.
+// A shift is a reception handover session. At open and close the cashier confirms
+// the laundry that is in progress and acknowledges they've physically checked the
+// laundry area. (No cash counting.)
 export async function getOpenShiftFor(cashierId) {
   const shifts = await getCollection(K_SHIFTS);
   return shifts.find((s) => s.cashierId === cashierId && s.status === 'open') || null;
 }
 
-export async function openShift({ type, openingFloat, note }, actor) {
+// Orders currently in the laundry area (accepted / cleaning / ready).
+async function inProgressOrders() {
+  const orders = await getCollection(K_ORDERS);
+  return orders
+    .filter((o) => ['accepted', 'cleaning', 'ready'].includes(o.status))
+    .map((o) => ({ id: o.id, number: o.number, guestName: o.guestName, room: o.room, status: o.status, items: o.items, loads: o.loads }));
+}
+
+export async function openShift({ type, note }, actor) {
   if (!actor?.id) throw httpError(401, 'Sign in first');
   if (await getOpenShiftFor(actor.id)) throw httpError(409, 'You already have an open shift — close it first.');
+  const inProgress = await inProgressOrders();
   const shifts = await getCollection(K_SHIFTS);
   const shift = {
     id: newId('shf'),
     cashierId: actor.id,
     cashierName: actor.name,
     type: ['AM', 'PM', 'Night'].includes(type) ? type : shiftOf(new Date()),
-    openingFloat: Math.max(0, Number(openingFloat) || 0),
     openingNote: note ? String(note).slice(0, 300) : '',
+    openingInProgress: inProgress.length,
     openedAt: nowIso(),
     status: 'open',
     closedAt: null,
-    closingCash: null,
     closingNote: '',
+    acknowledged: false,
+    confirmedOrderIds: [],
+    closingInProgress: null,
   };
   shifts.push(shift);
   await saveCollection(K_SHIFTS, shifts);
   return shift;
 }
 
-export async function closeShift({ closingCash, note }, actor) {
+export async function closeShift({ note, acknowledged, confirmedOrderIds }, actor) {
   const shifts = await getCollection(K_SHIFTS);
   const shift = shifts.find((s) => s.cashierId === actor.id && s.status === 'open');
   if (!shift) throw httpError(404, 'You have no open shift.');
-  const cashCollected = await cashCollectedForShift(shift.id);
+  if (!acknowledged) throw httpError(400, 'Please confirm you have checked the laundry area and the items are present.');
+  const inProgress = await inProgressOrders();
   shift.status = 'closed';
   shift.closedAt = nowIso();
-  shift.closingCash = Math.max(0, Number(closingCash) || 0);
   shift.closingNote = note ? String(note).slice(0, 300) : '';
-  shift.cashCollected = round2(cashCollected);
-  shift.expectedCash = round2(shift.openingFloat + cashCollected);
-  shift.variance = round2(shift.closingCash - shift.expectedCash);
+  shift.acknowledged = true;
+  shift.confirmedOrderIds = Array.isArray(confirmedOrderIds) ? confirmedOrderIds : inProgress.map((o) => o.id);
+  shift.closingInProgress = inProgress.length;
   await saveCollection(K_SHIFTS, shifts);
   return shift;
-}
-
-async function cashCollectedForShift(shiftId) {
-  const orders = await getCollection(K_ORDERS);
-  return sum(orders
-    .filter((o) => o.paidShiftId === shiftId && o.paymentMethod === 'cash')
-    .map((o) => Number(o.price) || 0));
 }
 
 export async function listShifts({ from, to } = {}) {
@@ -621,9 +626,10 @@ export async function listShifts({ from, to } = {}) {
 }
 
 export async function currentShiftView(actor) {
+  const inProgress = await inProgressOrders();
   const shift = actor?.id ? await getOpenShiftFor(actor.id) : null;
-  if (!shift) return { open: false };
-  return { open: true, shift, cashCollected: round2(await cashCollectedForShift(shift.id)) };
+  if (!shift) return { open: false, inProgress };
+  return { open: true, shift, inProgress };
 }
 
 // -------------------------------------------------------------- internals ----
