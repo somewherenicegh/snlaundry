@@ -1,6 +1,7 @@
 :root {
   --accent: #0f766e;
   --accent-soft: #ccfbf1;
+  --hover: #FFF8ED;
   --bg: #f4f6f8;
   --card: #ffffff;
   --ink: #1f2937;
@@ -92,8 +93,11 @@ button.small { padding: 7px 12px; font-size: 13px; }
 .col h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 4px; }
 @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
 
-.ocard { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 14px; margin-bottom: 12px; cursor: pointer; border: 1px solid transparent; }
-.ocard:hover { border-color: var(--accent-soft); }
+.ocard { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 14px; margin-bottom: 12px; cursor: pointer; border: 1px solid var(--line); transition: background .12s; }
+.ocard:hover { background: var(--hover); }
+table.data tbody tr[onclick] { cursor: pointer; }
+table.data tbody tr[onclick]:hover { background: var(--hover); }
+.tabs button:hover { background: var(--hover); }
 .ocard .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .ocard .num { font-weight: 700; }
 .ocard .meta { font-size: 13px; color: var(--muted); }
@@ -116,7 +120,7 @@ table.data th { color: var(--muted); font-size: 12px; text-transform: uppercase;
 /* ---- PIN pad ---- */
 .pinpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: 260px; margin: 20px auto; }
 .pinpad button { background: #fff; color: var(--ink); border: 1px solid var(--line); font-size: 22px; padding: 18px 0; }
-.pinpad button:hover { background: var(--accent-soft); }
+.pinpad button:hover { background: var(--hover); }
 .pindots { text-align: center; font-size: 30px; letter-spacing: 12px; height: 34px; }
 
 /* ---- messages ---- */

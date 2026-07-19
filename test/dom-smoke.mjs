@@ -98,10 +98,21 @@ try {
   ok('new order shows Accept button', /Accept/.test(w.document.querySelector('#view').innerHTML));
   ok('sound mute button present in topbar', !!w.document.querySelector('#muteBtn'));
   ok('shift bar offers Start shift', /Start shift/.test(w.document.querySelector('#view').innerHTML));
-  // open the start-shift modal (laundry handover — no cash float)
+  // open the start-shift modal (laundry handover — acknowledge, no cash float)
   w.openStartShift();
-  ok('start-shift modal has shift type + note (no cash float)', !!w.document.querySelector('#shType') && !!w.document.querySelector('#shNote') && !w.document.querySelector('#shFloat'));
+  ok('start-shift modal has shift type + acknowledgement (no cash float)', !!w.document.querySelector('#shType') && !!w.document.querySelector('#shAck') && !w.document.querySelector('#shFloat'));
   w.closeModal();
+  ok('admin-selected hover colour applied (--hover)', w.document.documentElement.style.getPropertyValue('--hover').toUpperCase() === '#FFF8ED');
+
+  // shift-boundary lock UI (render the banner directly)
+  w.__test.state.shiftEnded = { shiftId: 'x', starterId: 'y', starterName: 'Ada', oldType: 'AM', newType: 'PM' };
+  w.__test.state.continueMode = false;
+  w.__test.renderShiftEndBanner();
+  ok('shift-end lock shows continue + new-shift buttons', !!w.document.querySelector('#btnContinueShift') && !!w.document.querySelector('#btnNewShift'));
+  ok('lock heading reflects ended shift', /AM shift has ended/.test(w.document.querySelector('#lockScreen h2').textContent));
+  w.__test.state.continueMode = true; w.__test.renderShiftEndBanner();
+  ok('continue mode asks for starter PIN', /Ada/.test(w.document.querySelector('#lockScreen .hint').textContent));
+  w.__test.state.shiftEnded = null; w.__test.renderShiftEndBanner(); // reset
 
   // open settings tab and verify currency + QR render
   [...w.document.querySelectorAll('#tabs button')].find(b => b.dataset.tab === 'settings').click();

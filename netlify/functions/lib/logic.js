@@ -34,6 +34,7 @@ export function defaultSettings() {
     hostelName: 'somewhere nice',
     logoDataUrl: '',
     accentColor: '#0f766e',
+    hoverColor: '#FFF8ED',
     currency: { code: 'GHS', symbol: '₵' },
     pricePerLoad: 10,
     piecesPerLoad: 25,
@@ -567,19 +568,29 @@ export async function getOpenShiftFor(cashierId) {
   return shifts.find((s) => s.cashierId === cashierId && s.status === 'open') || null;
 }
 
-// Orders currently in the laundry area (accepted / cleaning / ready).
+// Orders currently in the laundry area (accepted / cleaning / ready), incl. payment.
 async function inProgressOrders() {
   const orders = await getCollection(K_ORDERS);
   return orders
     .filter((o) => ['accepted', 'cleaning', 'ready'].includes(o.status))
-    .map((o) => ({ id: o.id, number: o.number, guestName: o.guestName, room: o.room, status: o.status, items: o.items, loads: o.loads }));
+    .map((o) => ({ id: o.id, number: o.number, guestName: o.guestName, room: o.room, status: o.status, items: o.items, loads: o.loads, paymentStatus: o.paymentStatus, price: o.price }));
 }
 
-export async function openShift({ type, note }, actor) {
+export async function openShift({ type, note, acknowledged, confirmedOrderIds, handover }, actor) {
   if (!actor?.id) throw httpError(401, 'Sign in first');
-  if (await getOpenShiftFor(actor.id)) throw httpError(409, 'You already have an open shift — close it first.');
+  const mineOpen = await getOpenShiftFor(actor.id);
+  if (mineOpen && !handover) throw httpError(409, 'You already have an open shift — close it first.');
+  if (!acknowledged) throw httpError(400, 'Please confirm you have checked the laundry area and the items are present.');
   const inProgress = await inProgressOrders();
   const shifts = await getCollection(K_SHIFTS);
+  // Single reception: starting a shift auto-closes any other still-open shift (handover).
+  shifts.forEach((s) => {
+    if (s.status === 'open') {
+      s.status = 'closed'; s.closedAt = nowIso();
+      s.closingNote = s.closingNote || 'Closed at shift handover';
+      s.closingInProgress = inProgress.length;
+    }
+  });
   const shift = {
     id: newId('shf'),
     cashierId: actor.id,
@@ -587,6 +598,8 @@ export async function openShift({ type, note }, actor) {
     type: ['AM', 'PM', 'Night'].includes(type) ? type : shiftOf(new Date()),
     openingNote: note ? String(note).slice(0, 300) : '',
     openingInProgress: inProgress.length,
+    openingAcknowledged: true,
+    openingConfirmedIds: Array.isArray(confirmedOrderIds) ? confirmedOrderIds : inProgress.map((o) => o.id),
     openedAt: nowIso(),
     status: 'open',
     closedAt: null,

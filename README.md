@@ -38,13 +38,15 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 **Pricing model:** flat price **per load**. Loads = ⌈items ÷ max-pieces-per-load⌉ (default max 25/load, admin-configurable). Reception can override the price on any order.
 
 **Also included**
-- Clean neutral theme; colour, logo and name are all set in Settings.
+- Clean neutral theme; accent colour, **hover-highlight colour** (default `#FFF8ED`), logo and name are all set in Settings.
 - Guest chooses payment at order time: **Pay now** (cash or card) or **Pay at pickup**.
 - An order **cannot be marked picked up until payment is collected**.
 - **Reverse** an order a stage (e.g. ready → cleaning) — admins and any cashier granted the *reverseStatus* permission.
 - Reports show **who** accepted / cleaned / marked ready / took payment, plus breakdowns **by shift** (AM 06–14, PM 14–22, Night 22–06) and **by staff**.
-- **Shift handovers:** a receptionist opens a shift confirming the laundry already in progress, and closes it by ticking the in-progress items and acknowledging they've physically checked the laundry area (no cash counting).
-- **Repeating ping** at reception every few seconds while any order is still awaiting acceptance — it stops once every order is accepted. **Only an admin can mute** the sound.
+- **Shift handovers:** opening *and* closing a shift lists the laundry currently in progress (with **unpaid items flagged**) and requires the receptionist to tick the items and acknowledge they've physically checked the laundry area. No cash counting.
+- **Two distinct reception chimes:** a repeating ping while any order awaits acceptance (stops once all are accepted), and a separate repeating chime when no shift is open (stops once a shift is started). **Only an admin can mute** the sound.
+- **Auto-lock** after 5 minutes of inactivity.
+- **Shift-boundary lock:** when the clock crosses into a new shift period, the terminal locks and asks whether to start a new shift or continue the current one — continuing requires the PIN of the cashier who started that shift.
 - Orders are tagged by **room name** (e.g. *Duafe*), not room number.
 
 ---

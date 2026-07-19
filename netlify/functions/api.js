@@ -46,7 +46,7 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
     if (parts[0] === 'public-settings' && m === 'GET') {
       const s = await L.getSettings();
       return json(200, {
-        hostelName: s.hostelName, logoDataUrl: s.logoDataUrl, accentColor: s.accentColor,
+        hostelName: s.hostelName, logoDataUrl: s.logoDataUrl, accentColor: s.accentColor, hoverColor: s.hoverColor,
         currency: s.currency, piecesPerLoad: s.piecesPerLoad, pricePerLoad: s.pricePerLoad,
         turnaroundHours: s.turnaroundHours,
       });

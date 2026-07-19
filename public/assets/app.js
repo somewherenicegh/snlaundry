@@ -71,9 +71,39 @@ function toggleMute() {
   state.muted = !state.muted;
   localStorage.setItem('laundry_muted', state.muted ? '1' : '0');
   const b = document.getElementById('muteBtn');
-  if (b) b.textContent = state.muted ? '🔕 Muted' : '🔔 Sound on';
+  if (b) b.textContent = state.muted ? '🔕 Sound off' : '🔔 Sound on';
   if (!state.muted) { initAudio(); ping(); }
 }
+// A distinct, lower "start a shift" chime (three equal pulses).
+function shiftPing() {
+  if (state.muted || !_audioCtx) return;
+  try {
+    const t = _audioCtx.currentTime;
+    [0, 0.22, 0.44].forEach((off) => {
+      const osc = _audioCtx.createOscillator();
+      const gain = _audioCtx.createGain();
+      osc.type = 'triangle'; osc.frequency.value = 392; // G4, calmer than the order ping
+      gain.gain.setValueAtTime(0.0001, t + off);
+      gain.gain.exponentialRampToValueAtTime(0.22, t + off + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + off + 0.16);
+      osc.connect(gain); gain.connect(_audioCtx.destination);
+      osc.start(t + off); osc.stop(t + off + 0.18);
+    });
+  } catch {}
+}
+function currentShiftType() {
+  const h = new Date().getHours();
+  return (h >= 6 && h < 14) ? 'AM' : (h >= 14 && h < 22) ? 'PM' : 'Night';
+}
+
+// ---------------- idle auto-lock (5 minutes) ----------------
+let _idleTimer = null;
+function resetIdle() {
+  if (_idleTimer) clearTimeout(_idleTimer);
+  _idleTimer = setTimeout(() => { if (state.user) lock(); }, 5 * 60 * 1000);
+}
+['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'].forEach((ev) =>
+  document.addEventListener(ev, () => { if (state.user) resetIdle(); }, { passive: true }));
 
 // ---------------- helpers ----------------
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -123,10 +153,38 @@ async function showLock() {
   state.pin = ''; renderPinDots();
   try { const s = await (await fetch('/api/public-settings')).json();
     if (s.accentColor) document.documentElement.style.setProperty('--accent', s.accentColor);
+    if (s.hoverColor) document.documentElement.style.setProperty('--hover', s.hoverColor);
     $('#lockName').textContent = s.hostelName || 'Laundry';
     if (s.logoDataUrl && !$('#lockBrand img')) { const i = document.createElement('img'); i.src = s.logoDataUrl; $('#lockBrand').prepend(i); }
   } catch {}
   buildPinpad();
+  renderShiftEndBanner();
+}
+
+function renderShiftEndBanner() {
+  const card = document.querySelector('#lockScreen .card');
+  const h2 = card.querySelector('h2');
+  const hint = card.querySelector('.hint');
+  let banner = document.getElementById('shiftEndBanner');
+  if (!state.shiftEnded) {
+    if (banner) banner.remove();
+    h2.textContent = 'Enter your PIN';
+    hint.textContent = 'Each cashier has their own PIN. No full login needed.';
+    return;
+  }
+  h2.textContent = `${state.shiftEnded.oldType} shift has ended`;
+  if (!banner) { banner = document.createElement('div'); banner.id = 'shiftEndBanner'; card.insertBefore(banner, $('#pinDots')); }
+  banner.innerHTML = `
+    <div class="notice info" style="text-align:left">It's now the <b>${state.shiftEnded.newType}</b> shift period. Continue the ${state.shiftEnded.oldType} shift, or start a new one — then enter a PIN.</div>
+    <div class="row" style="margin:10px 0 4px">
+      <button class="${state.continueMode ? '' : 'secondary'} small" id="btnNewShift">Start new shift</button>
+      <button class="${state.continueMode ? 'small' : 'secondary small'}" id="btnContinueShift">Continue ${state.shiftEnded.oldType} shift</button>
+    </div>`;
+  hint.textContent = state.continueMode
+    ? `Enter ${state.shiftEnded.starterName}'s PIN (the cashier who started the ${state.shiftEnded.oldType} shift).`
+    : 'Enter your PIN to start a new shift.';
+  $('#btnContinueShift').onclick = () => { state.continueMode = true; renderShiftEndBanner(); };
+  $('#btnNewShift').onclick = () => { state.continueMode = false; renderShiftEndBanner(); };
 }
 function renderPinDots() { $('#pinDots').textContent = state.pin.replace(/./g, '•') || ' '; }
 function buildPinpad() {
@@ -144,8 +202,27 @@ async function pinKey(k) {
 }
 async function submitPin() {
   if (state.pin.length < 4) return notice($('#pinMsg'), 'err', 'PIN is at least 4 digits.');
-  try { const auth = await api('POST', '/auth/pin', { pin: state.pin }); afterAuth(auth); }
-  catch { state.pin = ''; renderPinDots(); notice($('#pinMsg'), 'err', 'Incorrect PIN. Try again.'); }
+  let auth;
+  try { auth = await api('POST', '/auth/pin', { pin: state.pin }); }
+  catch { state.pin = ''; renderPinDots(); return notice($('#pinMsg'), 'err', 'Incorrect PIN. Try again.'); }
+
+  // Shift-boundary lock: decide continue vs. start-new.
+  if (state.shiftEnded) {
+    const key = state.shiftEnded.shiftId + ':' + state.shiftEnded.newType;
+    if (state.continueMode) {
+      if (auth.user.id !== state.shiftEnded.starterId) {
+        state.pin = ''; renderPinDots();
+        return notice($('#pinMsg'), 'err', `To continue, enter ${state.shiftEnded.starterName}'s PIN (who started the ${state.shiftEnded.oldType} shift).`);
+      }
+      state._boundaryHandledFor = key; state.shiftEnded = null; state.continueMode = false;
+      return afterAuth(auth); // resume — shift stays open
+    }
+    // start a new shift after signing in
+    state._boundaryHandledFor = key; state.shiftEnded = null; state.continueMode = false;
+    state.pendingStartShift = true;
+    return afterAuth(auth);
+  }
+  afterAuth(auth);
 }
 async function afterAuth(auth) {
   state.token = auth.token; localStorage.setItem(TOKEN_KEY, auth.token);
@@ -158,6 +235,7 @@ function lock() {
   state.token = null; state.user = null; localStorage.removeItem(TOKEN_KEY);
   if (state.poll) clearInterval(state.poll);
   if (state.pingTimer) clearInterval(state.pingTimer);
+  if (_idleTimer) clearTimeout(_idleTimer);
   state.pendingNew = 0;
   showLock();
 }
@@ -168,19 +246,42 @@ async function enterApp() {
   initAudio(); // PIN entry is a user gesture, so audio is now allowed
   $('#topName').textContent = state.settings?.hostelName || 'Laundry';
   if (state.settings?.accentColor) document.documentElement.style.setProperty('--accent', state.settings.accentColor);
+  document.documentElement.style.setProperty('--hover', state.settings?.hoverColor || '#FFF8ED');
   $('#whoName').textContent = state.user.name;
   $('#whoRole').textContent = state.user.role;
   $('#lockBtn').onclick = lock;
   ensureTopbarControls();
+  resetIdle();
   state.knownOrderIds = null;
-  await refreshShift(); // load till status before first render so the shift bar shows
+  await refreshShift(); // load shift status before first render so the shift bar shows
   buildTabs();
   selectTab('orders');
+  checkShiftBoundary();
+  if (state.pendingStartShift) { state.pendingStartShift = false; state._startHandover = true; openStartShift(); }
   if (state.poll) clearInterval(state.poll);
   state.poll = setInterval(() => { if (['orders', 'messages'].includes(state.tab)) renderTab(true); }, 15000);
-  // Keep pinging while any order is still awaiting acceptance.
+  // Repeating alerts: keep pinging while any order awaits acceptance, and play the
+  // (distinct) shift-due chime while no shift is open. Also watch for shift boundary.
   if (state.pingTimer) clearInterval(state.pingTimer);
-  state.pingTimer = setInterval(() => { if (state.pendingNew > 0) ping(); }, 6000);
+  state.pingTick = 0;
+  state.pingTimer = setInterval(() => {
+    state.pingTick += 1;
+    if (state.pendingNew > 0) ping();
+    else if (!(state.shift && state.shift.open) && state.pingTick % 2 === 0) shiftPing();
+    checkShiftBoundary();
+  }, 6000);
+}
+
+function checkShiftBoundary() {
+  const s = state.shift;
+  if (!(s && s.open && s.shift)) return;
+  const cur = currentShiftType();
+  if (cur === s.shift.type) return;
+  const key = s.shift.id + ':' + cur;
+  if (state.shiftEnded || state._boundaryHandledFor === key) return;
+  state.shiftEnded = { shiftId: s.shift.id, starterId: s.shift.cashierId, starterName: s.shift.cashierName, oldType: s.shift.type, newType: cur };
+  state.continueMode = false;
+  lock(); // locks; showLock() renders the shift-end options because state.shiftEnded is set
 }
 
 function ensureTopbarControls() {
@@ -222,7 +323,7 @@ function inProgressListHtml(list, withChecks) {
   return `<div class="stack" style="max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:10px">
     ${list.map(o => `<label style="display:flex;gap:9px;align-items:center;font-weight:400;margin:0">
       ${withChecks ? `<input type="checkbox" class="ipchk" value="${o.id}" checked style="width:auto">` : ''}
-      <span>#${o.number} · ${esc(o.guestName)}${o.room ? ' · ' + esc(o.room) : ''} · <span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span> · ${o.items} item(s)</span>
+      <span>#${o.number} · ${esc(o.guestName)}${o.room ? ' · ' + esc(o.room) : ''} · <span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span> · ${o.items} item(s) ${o.paymentStatus !== 'paid' ? '<span class="badge" style="background:var(--danger)">unpaid</span>' : ''}</span>
     </label>`).join('')}
   </div>`;
 }
@@ -230,10 +331,11 @@ window.openStartShift = () => {
   const now = new Date().getHours();
   const guess = (now >= 6 && now < 14) ? 'AM' : (now >= 14 && now < 22) ? 'PM' : 'Night';
   const ip = state.shift?.inProgress || [];
+  const unpaid = ip.filter(o => o.paymentStatus !== 'paid').length;
   openModal(`
     <button class="ghost small close" onclick="closeModal()">✕</button>
     <h3>Start shift</h3>
-    <p class="hint">Confirm which shift you're starting. You're taking over ${ip.length} laundry order(s) currently in progress.</p>
+    <p class="hint">You're taking over <b>${ip.length}</b> laundry order(s) in progress${unpaid ? `, of which <b>${unpaid}</b> are still unpaid` : ''}. Confirm the items are present.</p>
     <div id="shMsg"></div>
     <label>Shift</label>
     <select id="shType">
@@ -241,16 +343,24 @@ window.openStartShift = () => {
       <option value="PM" ${guess === 'PM' ? 'selected' : ''}>PM (14:00–22:00)</option>
       <option value="Night" ${guess === 'Night' ? 'selected' : ''}>Night (22:00–06:00)</option>
     </select>
-    <label>Laundry you're starting with</label>
-    ${inProgressListHtml(ip, false)}
+    <label>Laundry you're starting with (unpaid items flagged)</label>
+    ${inProgressListHtml(ip, true)}
+    <label style="display:flex;gap:9px;align-items:flex-start;font-weight:400;margin-top:14px">
+      <input type="checkbox" id="shAck" style="width:auto;margin-top:3px">
+      <span>I have checked the laundry area and confirm these items are present, and I've noted the unpaid ones.</span>
+    </label>
     <label>Note <span class="muted">(optional)</span></label>
     <input id="shNote" placeholder="e.g. handover from PM shift">
     <button class="btn-full" style="margin-top:16px" onclick="doStartShift()">Start shift</button>
   `);
 };
 window.doStartShift = async () => {
+  if (!$('#shAck').checked) return notice($('#shMsg'), 'err', 'Please tick the box to confirm you checked the laundry area.');
+  const confirmedOrderIds = [...document.querySelectorAll('.ipchk:checked')].map(c => c.value);
+  const handover = !!state._startHandover;
   try {
-    await api('POST', '/shifts/open', { type: $('#shType').value, note: $('#shNote').value.trim() });
+    await api('POST', '/shifts/open', { type: $('#shType').value, note: $('#shNote').value.trim(), acknowledged: true, confirmedOrderIds, handover });
+    state._startHandover = false;
     closeModal(); await refreshShift(); renderTab();
   } catch (e) { notice($('#shMsg'), 'err', e.message); }
 };
@@ -698,7 +808,10 @@ async function renderSettings(view) {
     <div class="card">
       <h3 style="margin-top:0">Branding</h3>
       <label>Hostel / property name</label><input id="stName" value="${esc(s.hostelName || '')}">
-      <label>Accent colour</label><input id="stColor" type="color" value="${s.accentColor || '#0f766e'}" style="height:44px">
+      <div class="row">
+        <div><label>Accent colour</label><input id="stColor" type="color" value="${s.accentColor || '#0f766e'}" style="height:44px"></div>
+        <div><label>Hover highlight colour</label><input id="stHover" type="color" value="${(s.hoverColor || '#FFF8ED').toLowerCase()}" style="height:44px"></div>
+      </div>
       <label>Logo</label>
       <div style="display:flex;gap:12px;align-items:center">
         <img id="logoPreview" src="${s.logoDataUrl || ''}" style="max-height:46px;${s.logoDataUrl ? '' : 'display:none'}">
@@ -753,7 +866,7 @@ window.clearLogo = () => { state._newLogo = ''; $('#logoPreview').style.display 
 window.saveSettings = async () => {
   const [code, symbol] = $('#stCurrency').value.split('|');
   const body = {
-    hostelName: $('#stName').value.trim(), accentColor: $('#stColor').value,
+    hostelName: $('#stName').value.trim(), accentColor: $('#stColor').value, hoverColor: $('#stHover').value,
     currency: { code, symbol }, pricePerLoad: $('#stPrice').value, piecesPerLoad: $('#stPieces').value,
     turnaroundHours: $('#stTurn').value, stuckThresholdHours: $('#stStuck').value,
     adminEmail: $('#stAdminEmail').value.trim(), receptionEmail: $('#stRecEmail').value.trim(),
@@ -765,6 +878,7 @@ window.saveSettings = async () => {
     delete state._newLogo;
     $('#topName').textContent = state.settings.hostelName || 'Laundry';
     document.documentElement.style.setProperty('--accent', state.settings.accentColor);
+    document.documentElement.style.setProperty('--hover', state.settings.hoverColor || '#FFF8ED');
     notice($('#setMsg'), 'ok', 'Settings saved.');
     window.scrollTo(0, 0);
   } catch (e) { notice($('#setMsg'), 'err', e.message); }
@@ -783,5 +897,8 @@ window.downloadQr = () => {
 // ---------------- modal ----------------
 function openModal(html) { $('#modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">${html}</div></div>`; }
 window.closeModal = () => { $('#modalHost').innerHTML = ''; };
+
+// Test hooks (harmless in production).
+window.__test = { state, renderShiftEndBanner, checkShiftBoundary, currentShiftType };
 
 boot();
