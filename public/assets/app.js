@@ -132,6 +132,17 @@ function resetIdle() {
 ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'].forEach((ev) =>
   document.addEventListener(ev, () => { if (state.user) resetIdle(); }, { passive: true }));
 
+// Let staff type their PIN on a physical keyboard (PC) when the lock screen is up.
+document.addEventListener('keydown', (e) => {
+  const lock = document.getElementById('lockScreen');
+  if (!lock || lock.classList.contains('hidden')) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  if (/^[0-9]$/.test(e.key)) { e.preventDefault(); pinKey(e.key); }
+  else if (e.key === 'Backspace') { e.preventDefault(); pinKey('⌫'); }
+  else if (e.key === 'Enter') { e.preventDefault(); pinKey('OK'); }
+});
+
 // ---------------- helpers ----------------
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function cur() { return state.settings?.currency?.symbol || ''; }

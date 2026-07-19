@@ -87,6 +87,11 @@ try {
   w = await loadPage('app.html', 'app.js');
   ok('lock screen visible (not setup)', !w.document.querySelector('#lockScreen').classList.contains('hidden'));
   ok('PIN pad rendered', w.document.querySelectorAll('#pinpad button').length === 12);
+  // keyboard PIN entry works on the lock screen
+  w.document.dispatchEvent(new w.KeyboardEvent('keydown', { key: '7' }));
+  ok('keyboard digit updates the PIN', w.document.querySelector('#pinDots').textContent.includes('•'));
+  w.document.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Backspace' }));
+  ok('keyboard backspace clears it', w.document.querySelector('#pinDots').textContent.trim() === '');
   // enter admin PIN via the pad
   ['1', '2', '3', '4', 'OK'].forEach(k => [...w.document.querySelectorAll('#pinpad button')].find(b => b.textContent === k).click());
   await sleep(120);
