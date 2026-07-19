@@ -421,19 +421,22 @@ export async function listThreads() {
 }
 
 // ------------------------------------------------------------------- Reports --
-export async function revenueReport({ from, to } = {}) {
+export async function revenueReport({ from, to, shift } = {}) {
   const settings = await getSettings();
   const orders = await getCollection(K_ORDERS);
   const fromD = from ? new Date(from) : new Date(0);
   const toD = to ? new Date(to) : new Date(8640000000000000);
+  const shiftFilter = ['AM', 'PM', 'Night'].includes(shift) ? shift : null;
 
   // Revenue is recognised on orders that were accepted (have a price) within range,
   // excluding cancelled. We use acceptedAt as the revenue date.
-  const inRange = orders.filter((o) => {
+  let inRange = orders.filter((o) => {
     if (o.status === 'cancelled' || o.status === 'new') return false;
     const d = new Date(o.acceptedAt || o.createdAt);
     return d >= fromD && d <= toD;
   });
+  // Optional: restrict to a single reception shift.
+  if (shiftFilter) inRange = inRange.filter((o) => shiftOf(o.acceptedAt || o.createdAt) === shiftFilter);
 
   const revenue = sum(inRange.map((o) => Number(o.price) || 0));
   const paid = inRange.filter((o) => o.paymentStatus === 'paid');
@@ -487,7 +490,7 @@ export async function revenueReport({ from, to } = {}) {
 
   return {
     currency: settings.currency,
-    range: { from: from || null, to: to || null },
+    range: { from: from || null, to: to || null, shift: shiftFilter || 'all' },
     totals: {
       orders: inRange.length,
       revenue: round2(revenue),
@@ -513,6 +516,7 @@ export function reportToCsv(report) {
   const cur = report.currency?.code || '';
   const lines = [];
   lines.push(`Revenue Report,${report.range.from || 'all'},to,${report.range.to || 'all'}`);
+  lines.push(`Shift,${report.range.shift || 'all'}`);
   lines.push('');
   lines.push('Metric,Value');
   lines.push(`Total orders,${report.totals.orders}`);

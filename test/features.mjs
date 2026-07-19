@@ -119,6 +119,17 @@ try {
   const csv = await api('GET', '/api/report/csv', { headers: H(adminT) });
   ok('CSV includes By shift + By staff', /By shift/.test(csv.body) && /By staff/.test(csv.body) && /Accepted by/.test(csv.body));
 
+  section('Report filtered to a single shift');
+  const nowH = new Date().getHours();
+  const curShift = (nowH >= 6 && nowH < 14) ? 'AM' : (nowH >= 14 && nowH < 22) ? 'PM' : 'Night';
+  const otherShift = curShift === 'AM' ? 'PM' : 'AM';
+  r = await api('GET', '/api/report', { headers: H(adminT), query: { shift: curShift } });
+  ok('report filtered to the current shift returns its orders', r.body.range.shift === curShift && r.body.totals.orders > 0, JSON.stringify(r.body.range));
+  r = await api('GET', '/api/report', { headers: H(adminT), query: { shift: otherShift } });
+  ok('report filtered to a different shift returns none', r.body.range.shift === otherShift && r.body.totals.orders === 0);
+  const csvShift = await api('GET', '/api/report/csv', { headers: H(adminT), query: { shift: curShift } });
+  ok('CSV notes the selected shift', new RegExp('Shift,' + curShift).test(csvShift.body));
+
   section('Shift history endpoint');
   r = await api('GET', '/api/shifts', { headers: H(adminT) });
   ok('shift history lists the closed shift', r.status === 200 && r.body.length === 1 && r.body[0].acknowledged === true);

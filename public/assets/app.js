@@ -329,6 +329,15 @@ function lock() {
   if (state.pingTimer) clearInterval(state.pingTimer);
   if (_idleTimer) clearTimeout(_idleTimer);
   state.pendingNew = 0;
+  // If the open shift's period has elapsed, re-show the continue/new prompt on the
+  // lock screen — every automatic (or manual) lock, until a new shift is opened.
+  const s = state.shift;
+  if (s && s.open && s.shift && s.shift.type !== currentShiftType()) {
+    state.shiftEnded = { shiftId: s.shift.id, starterId: s.shift.cashierId, starterName: s.shift.cashierName, oldType: s.shift.type, newType: currentShiftType() };
+    state.continueMode = false;
+  } else {
+    state.shiftEnded = null;
+  }
   showLock();
 }
 
@@ -376,10 +385,11 @@ function checkShiftBoundary() {
   const cur = currentShiftType();
   if (cur === s.shift.type) return;
   const key = s.shift.id + ':' + cur;
-  if (state.shiftEnded || state._boundaryHandledFor === key) return;
-  state.shiftEnded = { shiftId: s.shift.id, starterId: s.shift.cashierId, starterName: s.shift.cashierName, oldType: s.shift.type, newType: cur };
-  state.continueMode = false;
-  lock(); // locks; showLock() renders the shift-end options because state.shiftEnded is set
+  // Only force a lock the first time this crossing is detected; after the user
+  // chooses "continue", they can keep working. Subsequent auto-locks (idle) will
+  // re-prompt because lock() itself detects the expired shift.
+  if (state._boundaryHandledFor === key) return;
+  lock();
 }
 
 function ensureTopbarControls() {
@@ -765,6 +775,12 @@ async function renderReports(view) {
       <div class="toolbar">
         <div><label>From</label><input id="rpFrom" type="date" value="${toStr(start)}"></div>
         <div><label>To</label><input id="rpTo" type="date" value="${toStr(today)}"></div>
+        <div><label>Shift</label><select id="rpShift">
+          <option value="">All shifts</option>
+          <option value="AM">AM (06–14)</option>
+          <option value="PM">PM (14–22)</option>
+          <option value="Night">Night (22–06)</option>
+        </select></div>
         <button onclick="loadReport()">Run</button>
         ${can('exportReports') ? `<button class="secondary" onclick="exportCsv()">CSV</button><button class="secondary" onclick="exportPdf()">PDF</button>` : ''}
       </div>
@@ -772,14 +788,27 @@ async function renderReports(view) {
     <div id="reportBody"></div>`;
   loadReport();
 }
-function reportRange() { return { from: new Date($('#rpFrom').value + 'T00:00:00').toISOString(), to: new Date($('#rpTo').value + 'T23:59:59').toISOString() }; }
+function reportParams() {
+  return {
+    from: new Date($('#rpFrom').value + 'T00:00:00').toISOString(),
+    to: new Date($('#rpTo').value + 'T23:59:59').toISOString(),
+    shift: $('#rpShift') ? $('#rpShift').value : '',
+  };
+}
+function reportQs() {
+  const p = reportParams();
+  let s = `from=${encodeURIComponent(p.from)}&to=${encodeURIComponent(p.to)}`;
+  if (p.shift) s += `&shift=${encodeURIComponent(p.shift)}`;
+  return s;
+}
 window.loadReport = async () => {
-  const { from, to } = reportRange();
-  const r = await api('GET', `/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  const p = reportParams();
+  const r = await api('GET', '/report?' + reportQs());
   window._report = r;
   const t = r.totals;
   const maxRev = Math.max(1, ...r.byDay.map(d => d.revenue));
   $('#reportBody').innerHTML = `
+    ${r.range.shift && r.range.shift !== 'all' ? `<p class="hint" style="margin:0 0 12px">Showing <b>${r.range.shift}</b> shift only (${SHIFT_TIME[r.range.shift]}).</p>` : ''}
     <div class="stats">
       <div class="stat"><div class="k">Revenue</div><div class="v">${money(t.revenue)}</div></div>
       <div class="stat"><div class="k">Collected</div><div class="v">${money(t.collected)}</div></div>
@@ -810,7 +839,7 @@ window.loadReport = async () => {
       <tbody>${r.orders.map(o => `<tr><td>#${o.number}</td><td>${fmt(o.acceptedAt || o.createdAt)}</td><td>${o.shift}</td><td>${esc(o.guestName)}</td><td>${esc(o.room || '—')}</td><td>${o.loads}</td><td>${money(o.price)}</td><td>${o.paymentStatus === 'paid' ? 'Paid (' + (o.paymentMethod || '') + ')' : 'Unpaid'}</td><td>${esc(nm(o.acceptedBy))}</td><td>${esc(nm(o.readyBy))}</td><td>${esc(nm(o.paidBy))}</td><td><span class="badge b-${o.status}">${STATUS_LABEL[o.status]}</span></td></tr>`).join('') || '<tr><td colspan="12" class="muted">None</td></tr>'}</tbody></table></div>
     </div>
     <div id="shiftHistory"></div>`;
-  loadShiftHistory(from, to);
+  loadShiftHistory(p.from, p.to);
 };
 async function loadShiftHistory(from, to) {
   let shifts = [];
@@ -823,10 +852,10 @@ async function loadShiftHistory(from, to) {
 const SHIFT_TIME = { AM: '06:00–14:00', PM: '14:00–22:00', Night: '22:00–06:00' };
 function nm(ref) { return ref && ref.name ? ref.name : '—'; }
 window.exportCsv = async () => {
-  const { from, to } = reportRange();
-  const res = await fetch(`/api/report/csv?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: { authorization: `Bearer ${state.token}` } });
+  const res = await fetch('/api/report/csv?' + reportQs(), { headers: { authorization: `Bearer ${state.token}` } });
   const blob = await res.blob();
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `revenue-${$('#rpFrom').value}_to_${$('#rpTo').value}.csv`; a.click();
+  const shiftTag = $('#rpShift') && $('#rpShift').value ? '_' + $('#rpShift').value : '';
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `revenue-${$('#rpFrom').value}_to_${$('#rpTo').value}${shiftTag}.csv`; a.click();
 };
 window.exportPdf = () => {
   const r = window._report; if (!r) return;
@@ -839,7 +868,7 @@ window.exportPdf = () => {
     .kv{display:flex;flex-wrap:wrap;gap:8px}.kv div{border:1px solid #eee;border-radius:8px;padding:10px 14px;min-width:120px}
     .kv b{display:block;font-size:20px}</style></head><body>
     <h1>${name} — Revenue Report</h1>
-    <p>${$('#rpFrom').value} to ${$('#rpTo').value}</p>
+    <p>${$('#rpFrom').value} to ${$('#rpTo').value}${r.range.shift && r.range.shift !== 'all' ? ' · ' + r.range.shift + ' shift only' : ''}</p>
     <div class="kv">
       <div>Revenue<b>${money(t.revenue)}</b></div><div>Collected<b>${money(t.collected)}</b></div>
       <div>Outstanding<b>${money(t.outstanding)}</b></div><div>Orders<b>${t.orders}</b></div>
