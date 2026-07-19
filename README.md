@@ -49,6 +49,8 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - **Shift-boundary lock:** when the clock crosses into a new shift period, the terminal locks and asks whether to start a new shift or continue the current one — continuing requires the PIN of the cashier who started that shift.
 - Orders are tagged by **room name** (e.g. *Duafe*), not room number.
 - Generic app icon (favicon), and staff can type their PIN on a physical keyboard (PC) as well as the on-screen pad.
+- **Installable app (PWA)** with **push notifications** — reception is alerted to new orders and messages even when the app tab is in the background or closed.
+- **Admin can bulk-delete orders** created within a chosen date range (Settings → Delete orders).
 
 ---
 
@@ -122,6 +124,18 @@ Notes: Gmail sends from your real address (no domain setup needed) but caps at r
 Set `RESEND_API_KEY` (and leave the `GMAIL_*` vars blank). Resend needs a **verified domain** to send from your own address — e.g. verify `hostelaccra.com` in Resend → Domains, then set `EMAIL_FROM="somewhere nice <info@hostelaccra.com>"`. Its sandbox sender `onboarding@resend.dev` only delivers to your own Resend signup email.
 
 ---
+
+## Install the app + push notifications
+
+The reception app is a **PWA**: open `https://<your-site>.netlify.app/app` in Chrome/Edge/Safari and choose **Install app** (desktop) or **Add to Home Screen** (mobile).
+
+For notifications that arrive even when the app is closed, set up **Web Push** once:
+
+1. Generate a key pair: `npm install` then `npm run gen-vapid`. It prints three values.
+2. In Netlify → **Environment variables**, add `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` (e.g. `mailto:you@hostelaccra.com`).
+3. Redeploy. In the app, each staff member taps **🔔 Enable alerts** once and allows notifications.
+
+If you skip this, the app still works and still shows notifications while the tab is open in the background — you just won't get pushes when it's fully closed.
 
 ## Run locally (optional)
 

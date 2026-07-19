@@ -152,8 +152,54 @@ function ago(iso) { if (!iso) return ''; const h = (Date.now() - new Date(iso)) 
 function toLocalInput(iso) { const d = iso ? new Date(iso) : new Date(); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
 function notice(el, kind, text) { el.innerHTML = text ? `<div class="notice ${kind}">${esc(text)}</div>` : ''; }
 
+// ---------------- PWA + push notifications ----------------
+function registerSW() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+}
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+function urlBase64ToUint8Array(b64) {
+  const padding = '='.repeat((4 - (b64.length % 4)) % 4);
+  const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+window.enableNotifications = async () => {
+  if (!pushSupported()) { alert('This browser does not support notifications.'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { updateNotifyBtn(); return; }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const { key } = await (await fetch('/api/push/key')).json();
+    if (key) {
+      const sub = (await reg.pushManager.getSubscription())
+        || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) });
+      await api('POST', '/push/subscribe', { subscription: sub.toJSON ? sub.toJSON() : sub });
+    }
+  } catch (e) { console.warn('push subscribe failed', e); }
+  updateNotifyBtn();
+};
+function updateNotifyBtn() {
+  const b = document.getElementById('notifyBtn');
+  if (!b) return;
+  const granted = ('Notification' in window) && Notification.permission === 'granted';
+  b.classList.toggle('hidden', granted || !pushSupported());
+}
+// Fallback: show a system notification while the tab is in the background even if
+// server push isn't configured (works as long as the browser is running).
+function notifyBg(title, body, tag) {
+  if (document.visibilityState === 'visible') return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try { navigator.serviceWorker.ready.then((reg) => reg.showNotification(title, { body, icon: '/icon-192.png', badge: '/icon-192.png', tag: tag || 'laundry-bg', renotify: true })); } catch {}
+}
+
 // ---------------- boot ----------------
 async function boot() {
+  registerSW();
   let status;
   try { status = await api('GET', '/status'); } catch { status = {}; }
   if (!status.isSetup) return showSetup();
@@ -328,16 +374,26 @@ function checkShiftBoundary() {
 }
 
 function ensureTopbarControls() {
-  // Rebuild each login: only an admin may toggle the new-order sound.
+  const lockBtn = $('#lockBtn');
+  // "Enable alerts" — available to all staff so they can subscribe to push.
+  if (!document.getElementById('notifyBtn')) {
+    const n = document.createElement('button');
+    n.id = 'notifyBtn'; n.className = 'ghost small';
+    n.textContent = '🔔 Enable alerts';
+    n.onclick = () => window.enableNotifications();
+    lockBtn.parentNode.insertBefore(n, lockBtn);
+  }
+  updateNotifyBtn();
+  // Mute toggle — only an admin may turn the sound off.
   const existing = document.getElementById('muteBtn');
   if (existing) existing.remove();
-  if (state.user.role !== 'admin') return;
-  const lockBtn = $('#lockBtn');
-  const mute = document.createElement('button');
-  mute.id = 'muteBtn'; mute.className = 'ghost small';
-  mute.textContent = state.muted ? '🔕 Sound off' : '🔔 Sound on';
-  mute.onclick = toggleMute;
-  lockBtn.parentNode.insertBefore(mute, lockBtn);
+  if (state.user.role === 'admin') {
+    const mute = document.createElement('button');
+    mute.id = 'muteBtn'; mute.className = 'ghost small';
+    mute.textContent = state.muted ? '🔕 Sound off' : '🔔 Sound on';
+    mute.onclick = toggleMute;
+    lockBtn.parentNode.insertBefore(mute, lockBtn);
+  }
 }
 
 // ---------------- shift (till session) ----------------
@@ -473,7 +529,7 @@ async function renderOrders(view, silent) {
   state.pendingNew = newIds.length; // drives the repeating ping until all are accepted
   if (state.knownOrderIds !== null) {
     const fresh = newIds.filter(id => !state.knownOrderIds.includes(id));
-    if (fresh.length) ping(); // immediate ping the moment one arrives
+    if (fresh.length) { ping(); notifyBg('New laundry order', `${fresh.length} new order(s) awaiting acceptance`, 'new-order'); }
   }
   state.knownOrderIds = newIds;
   if (can('messageGuests')) {
@@ -904,9 +960,33 @@ async function renderSettings(view) {
       <div id="qrbox" style="display:inline-block;padding:12px;background:#fff;border-radius:12px"></div>
       <p class="muted" style="font-size:12px;word-break:break-all">${esc(orderUrl)}</p>
       <button class="small secondary" onclick="downloadQr()">Download QR</button>
+    </div>
+
+    <div class="card" style="margin-top:20px;border:1px solid #f0cfc9">
+      <h3 style="margin-top:0;color:var(--danger)">Delete orders</h3>
+      <p class="hint">Permanently remove all orders created within a date range. This cannot be undone.</p>
+      <div id="delMsg"></div>
+      <div class="row">
+        <div><label>From</label><input id="delFrom" type="date"></div>
+        <div><label>To</label><input id="delTo" type="date"></div>
+      </div>
+      <button class="danger" style="margin-top:14px" onclick="deleteOrdersRange()">Delete orders in range</button>
     </div>`;
   drawQr(orderUrl);
 }
+window.deleteOrdersRange = async () => {
+  const from = $('#delFrom').value, to = $('#delTo').value;
+  if (!from || !to) return notice($('#delMsg'), 'err', 'Choose both a start and end date.');
+  if (!confirm(`Permanently delete ALL orders created between ${from} and ${to}? This cannot be undone.`)) return;
+  try {
+    const r = await api('POST', '/orders/delete-range', {
+      from: new Date(from + 'T00:00:00').toISOString(),
+      to: new Date(to + 'T23:59:59').toISOString(),
+    });
+    notice($('#delMsg'), 'ok', `Deleted ${r.removed} order(s). ${r.remaining} remaining.`);
+    state.knownOrderIds = null;
+  } catch (e) { notice($('#delMsg'), 'err', e.message); }
+};
 window.previewLogo = (input) => {
   const f = input.files[0]; if (!f) return;
   if (f.size > 400000) { notice($('#setMsg'), 'err', 'Logo too large — please use an image under 400KB.'); input.value = ''; return; }

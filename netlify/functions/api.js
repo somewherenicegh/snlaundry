@@ -5,6 +5,7 @@
 
 import { verifyToken, can, PERMISSIONS } from './lib/auth.js';
 import * as L from './lib/logic.js';
+import { vapidPublicKey, addSubscription, removeSubscription } from './lib/push.js';
 
 const json = (status, body) => ({ status, body });
 
@@ -21,6 +22,13 @@ async function requirePerm(headers, perm) {
   const user = await L.getCashierById(payload.id);
   if (!user || !user.active) throw L.httpError(401, 'Session no longer valid.');
   if (!can(user, perm)) throw L.httpError(403, 'You do not have permission for this action.');
+  return user;
+}
+
+async function requireAdmin(headers) {
+  const payload = requireUser(headers);
+  const user = await L.getCashierById(payload.id);
+  if (!user || user.role !== 'admin') throw L.httpError(403, 'Admin only.');
   return user;
 }
 
@@ -50,6 +58,11 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
         currency: s.currency, piecesPerLoad: s.piecesPerLoad, pricePerLoad: s.pricePerLoad,
         turnaroundHours: s.turnaroundHours,
       });
+    }
+
+    // Public: the VAPID public key (needed by the browser to subscribe to push).
+    if (parts[0] === 'push' && parts[1] === 'key' && m === 'GET') {
+      return json(200, { key: vapidPublicKey() });
     }
 
     if (parts[0] === 'auth' && parts[1] === 'pin' && m === 'POST') {
@@ -138,6 +151,24 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
     if (parts[0] === 'threads' && m === 'GET') {
       await requirePerm(headers, 'messageGuests');
       return json(200, await L.listThreads());
+    }
+
+    // ---------- push subscriptions ----------
+    if (parts[0] === 'push') {
+      if (parts[1] === 'subscribe' && m === 'POST') {
+        requireUser(headers);
+        return json(200, await addSubscription(body.subscription));
+      }
+      if (parts[1] === 'unsubscribe' && m === 'POST') {
+        requireUser(headers);
+        return json(200, await removeSubscription(body.endpoint));
+      }
+    }
+
+    // ---------- admin: bulk delete orders in a date range ----------
+    if (parts[0] === 'orders' && parts[1] === 'delete-range' && m === 'POST') {
+      await requireAdmin(headers);
+      return json(200, await L.deleteOrdersInRange(body));
     }
 
     // ---------- shifts (till sessions) ----------

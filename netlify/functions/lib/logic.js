@@ -6,6 +6,7 @@ import {
   hashPin, verifyPin, signToken, defaultCashierPermissions, newId,
 } from './auth.js';
 import { sendEmail, orderEmail } from './email.js';
+import { sendPushToAll } from './push.js';
 
 const K_SETTINGS = 'settings';
 const K_CASHIERS = 'cashiers';
@@ -208,6 +209,7 @@ export async function createOrder({ guestName, guestEmail, items, note, paymentT
     `Placed ${n} item(s) · ${timing === 'now' ? 'pay now (' + method + ')' : 'pay at pickup'}`);
   orders.push(order);
   await saveCollection(K_ORDERS, orders);
+  try { await sendPushToAll({ title: 'New laundry order', body: `#${number} · ${order.guestName} · ${n} item(s)`, url: '/app', tag: 'order-' + number }); } catch {}
   return publicOrder(order);
 }
 
@@ -343,6 +345,20 @@ export async function modifyOrder(id, patch, actor) {
   });
 }
 
+// Admin-only bulk delete: permanently remove orders created within a date range.
+export async function deleteOrdersInRange({ from, to } = {}) {
+  const orders = await getCollection(K_ORDERS);
+  const fromD = from ? new Date(from) : new Date(0);
+  const toD = to ? new Date(to) : new Date(8640000000000000);
+  const keep = orders.filter((o) => {
+    const d = new Date(o.createdAt);
+    return !(d >= fromD && d <= toD);
+  });
+  const removed = orders.length - keep.length;
+  await saveCollection(K_ORDERS, keep);
+  return { removed, remaining: keep.length };
+}
+
 export async function cancelOrder(id, actor, reason) {
   return mutateOrder(id, async (o) => {
     if (o.status === 'completed') throw httpError(409, 'Completed orders cannot be cancelled');
@@ -362,6 +378,7 @@ export async function guestSendMessage(publicId, text) {
   o.messages.push({ id: newId('msg'), sender: 'guest', text: clean.slice(0, 1000), at: nowIso(), readByStaff: false });
   o.updatedAt = nowIso();
   await saveCollection(K_ORDERS, orders);
+  try { await sendPushToAll({ title: 'New guest message', body: `${o.guestName} · order #${o.number}`, url: '/app', tag: 'msg-' + o.number }); } catch {}
   return publicOrder(o);
 }
 

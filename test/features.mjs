@@ -78,6 +78,16 @@ try {
   r = await api('POST', `/api/orders/${B}/revert`, { headers: H(yawAuth.body.token), body: {} });
   ok('cashier without reverseStatus blocked', r.status === 403, `got ${r.status}`);
 
+  section('Push subscriptions');
+  r = await api('GET', '/api/push/key');
+  ok('push key endpoint responds (null when unset)', r.status === 200 && ('key' in r.body));
+  r = await api('POST', '/api/push/subscribe', { body: { subscription: { endpoint: 'https://push/1', keys: { p256dh: 'a', auth: 'b' } } } });
+  ok('subscribe requires sign-in', r.status === 401);
+  r = await api('POST', '/api/push/subscribe', { headers: H(adminT), body: { subscription: { endpoint: 'https://push/1', keys: { p256dh: 'a', auth: 'b' } } } });
+  ok('signed-in staff can subscribe', r.status === 200 && r.body.ok);
+  r = await api('POST', '/api/push/subscribe', { headers: H(adminT), body: { subscription: { endpoint: 'https://push/1', keys: {} } } });
+  ok('duplicate subscription is de-duped', r.status === 200 && r.body.existing === true);
+
   section('Unread guest messages (drives the message ping)');
   await api('POST', `/api/orders/public/${Bpub}/messages`, { body: { text: 'Is it ready yet?' } });
   r = await api('GET', '/api/orders', { headers: H(adminT) });
@@ -127,6 +137,16 @@ try {
     { hostelName: 'somewhere nice', currency: { symbol: '₵' } });
   ok('email footer line removed', !/do not reply directly/i.test(em.html));
   ok('status badge is on its own row, separate from the sentence', /Accepted<\/span><\/p>\s*<p[^>]*>Your laundry order/.test(em.html), 'badge not separated');
+
+  section('Admin: delete orders in a timeframe');
+  const before = (await api('GET', '/api/orders', { headers: H(adminT) })).body.length;
+  ok('there are orders to delete', before > 0);
+  r = await api('POST', '/api/orders/delete-range', { headers: H(yawAuth.body.token), body: { from: '2000-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z' } });
+  ok('non-admin cannot bulk delete', r.status === 403, `got ${r.status}`);
+  r = await api('POST', '/api/orders/delete-range', { headers: H(adminT), body: { from: '2000-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z' } });
+  ok('admin deletes orders in range', r.status === 200 && r.body.removed === before, JSON.stringify(r.body));
+  r = await api('GET', '/api/orders', { headers: H(adminT) });
+  ok('orders cleared after delete', r.body.length === 0);
 } catch (err) {
   fail++; out.push(`\n💥 ${err.stack || err}`);
 }

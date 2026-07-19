@@ -16,7 +16,7 @@ process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'local-dev-secret';
 
 const { handleRequest } = await import('../netlify/functions/api.js');
 
-const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
+const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
 const PRETTY = { '/order': 'order.html', '/track': 'track.html', '/app': 'app.html', '/': 'index.html' };
 
 const server = http.createServer(async (req, res) => {

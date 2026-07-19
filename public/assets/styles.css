@@ -1,6 +1,7 @@
 :root {
   --accent: #0f766e;
-  --accent-soft: #ccfbf1;
+  --secondary: #FFF8ED;      /* the "secondary" cream — used for soft backgrounds */
+  --accent-soft: #FFF8ED;
   --hover: #FFF8ED;
   --bg: #f4f6f8;
   --card: #ffffff;
@@ -48,11 +49,11 @@ button, .btn {
 }
 button:hover, .btn:hover { filter: brightness(1.05); }
 button:disabled { opacity: .55; cursor: not-allowed; }
-button.secondary { background: #eef2f5; color: var(--ink); }
+button.secondary { background: var(--secondary); color: var(--ink); border: 1px solid var(--line); }
 button.ghost { background: transparent; color: var(--accent); padding: 8px 10px; }
 button.danger { background: var(--danger); }
 button.small { padding: 7px 12px; font-size: 13px; }
-.btn-full { width: 100%; }
+.btn-full { width: 100%; display: block; text-align: center; box-sizing: border-box; }
 
 .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #fff; }
 .b-new { background: #64748b; } .b-accepted { background: var(--blue); } .b-cleaning { background: var(--warn); }
@@ -133,6 +134,6 @@ table.data th { color: var(--muted); font-size: 12px; text-transform: uppercase;
 .log { font-size: 13px; color: var(--muted); border-left: 2px solid var(--line); padding: 4px 0 4px 12px; margin-left: 4px; }
 .log b { color: var(--ink); }
 
-.shiftbar { background: var(--accent-soft); border: 1px solid var(--accent-soft); border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.shiftbar { background: var(--secondary); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
 .shiftbar .spacer { flex: 1; }
 .shiftbar b { color: var(--accent); }
