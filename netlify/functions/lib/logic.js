@@ -5,7 +5,7 @@ import { readJSON, writeJSON, getCollection, saveCollection } from './store.js';
 import {
   hashPin, verifyPin, signToken, defaultCashierPermissions, newId,
 } from './auth.js';
-import { sendEmail, orderEmail } from './email.js';
+import { sendEmail, orderEmail, inviteEmail } from './email.js';
 import { sendPushToAll } from './push.js';
 
 const K_SETTINGS = 'settings';
@@ -43,9 +43,16 @@ export function defaultSettings() {
     stuckThresholdHours: 4,
     adminEmail: '',
     receptionEmail: '',
+    alertRecipients: [], // extra emails alerted when an order is stuck
     baseUrl: '',
     configured: false,
   };
+}
+
+// Parse a list of emails from an array or a comma/space/newline separated string.
+export function normalizeEmails(input) {
+  const arr = Array.isArray(input) ? input : String(input || '').split(/[\s,;]+/);
+  return [...new Set(arr.map((s) => String(s).trim().toLowerCase()).filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))];
 }
 
 export async function getSettings() {
@@ -61,6 +68,7 @@ export async function updateSettings(patch) {
   next.pricePerLoad = Math.max(0, Number(next.pricePerLoad) || 0);
   next.stuckThresholdHours = Math.max(0.25, Number(next.stuckThresholdHours) || 4);
   next.turnaroundHours = Math.max(1, Number(next.turnaroundHours) || 24);
+  next.alertRecipients = normalizeEmails(next.alertRecipients);
   await writeJSON(K_SETTINGS, next);
   return next;
 }
@@ -90,7 +98,7 @@ export async function listCashiers() {
   return cashiers.map(publicCashier);
 }
 
-export async function createCashier({ name, pin, role = 'cashier', permissions }) {
+export async function createCashier({ name, pin, role = 'cashier', permissions, email }) {
   validatePin(pin);
   const cashiers = await getCollection(K_CASHIERS);
   if (await pinInUse(pin, cashiers)) throw httpError(409, 'That PIN is already in use — choose another.');
@@ -99,6 +107,7 @@ export async function createCashier({ name, pin, role = 'cashier', permissions }
     id: newId('csh'), name: name || 'Cashier',
     role: role === 'admin' ? 'admin' : 'cashier',
     salt, hash,
+    email: validEmail(email) ? String(email).trim().toLowerCase() : '',
     permissions: role === 'admin' ? {} : { ...defaultCashierPermissions(), ...(permissions || {}) },
     active: true, createdAt: nowIso(),
   };
@@ -107,11 +116,34 @@ export async function createCashier({ name, pin, role = 'cashier', permissions }
   return publicCashier(c);
 }
 
+// Send a branded invitation email. The admin supplies the cashier's current PIN so
+// it can be included; we verify it matches before sending (PINs are stored hashed).
+export async function inviteCashier(id, { email, pin }, actor) {
+  const cashiers = await getCollection(K_CASHIERS);
+  const c = cashiers.find((x) => x.id === id);
+  if (!c) throw httpError(404, 'Cashier not found');
+  if (!validEmail(email)) throw httpError(400, 'A valid email address is required.');
+  if (!verifyPin(String(pin || ''), c.salt, c.hash)) {
+    throw httpError(400, "That PIN doesn't match this person — enter their current PIN so it can be included in the invite.");
+  }
+  c.email = String(email).trim().toLowerCase();
+  await saveCollection(K_CASHIERS, cashiers);
+  const settings = await getSettings();
+  const { subject, html } = inviteEmail(
+    { name: c.name, role: c.role, permissions: c.role === 'admin' ? {} : c.permissions, pin: String(pin) },
+    settings,
+    { inviterName: actor?.name },
+  );
+  const res = await sendEmail({ to: c.email, subject, html });
+  return { ok: true, sentTo: c.email, dryRun: !!res.dryRun };
+}
+
 export async function updateCashier(id, patch, actor) {
   const cashiers = await getCollection(K_CASHIERS);
   const c = cashiers.find((x) => x.id === id);
   if (!c) throw httpError(404, 'Cashier not found');
   if (patch.name != null) c.name = patch.name;
+  if (patch.email != null) c.email = validEmail(patch.email) ? String(patch.email).trim().toLowerCase() : '';
   if (patch.role != null) c.role = patch.role === 'admin' ? 'admin' : 'cashier';
   if (patch.active != null) c.active = !!patch.active;
   if (patch.permissions && c.role !== 'admin') c.permissions = { ...c.permissions, ...patch.permissions };
@@ -616,7 +648,7 @@ export async function openShift({ type, note, acknowledged, confirmedOrderIds, h
     id: newId('shf'),
     cashierId: actor.id,
     cashierName: actor.name,
-    type: ['AM', 'PM', 'Night'].includes(type) ? type : shiftOf(new Date()),
+    type: shiftOf(new Date()), // always the shift that is currently due (ignores any client value)
     openingNote: note ? String(note).slice(0, 300) : '',
     openingInProgress: inProgress.length,
     openingAcknowledged: true,
@@ -712,7 +744,7 @@ async function pinInUse(pin, cashiers, exceptId) {
 }
 
 function publicCashier(c) {
-  return { id: c.id, name: c.name, role: c.role, permissions: c.role === 'admin' ? {} : c.permissions, active: c.active, createdAt: c.createdAt };
+  return { id: c.id, name: c.name, email: c.email || '', role: c.role, permissions: c.role === 'admin' ? {} : c.permissions, active: c.active, createdAt: c.createdAt };
 }
 
 function publicOrder(o) {

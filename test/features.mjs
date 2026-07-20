@@ -12,12 +12,14 @@ process.env.SESSION_SECRET = 'feat-secret';
 delete process.env.RESEND_API_KEY;
 
 const { handleRequest } = await import('../netlify/functions/api.js');
+const { sentLog, clearSentLog, inviteEmail } = await import('../netlify/functions/lib/email.js');
 
 let pass = 0, fail = 0; const out = [];
 const ok = (n, c, x = '') => { if (c) { pass++; out.push(`  ✅ ${n}`); } else { fail++; out.push(`  ❌ ${n} ${x}`); } };
 const section = (t) => out.push(`\n▶ ${t}`);
 const api = (method, p, opts = {}) => handleRequest({ method, path: p, query: opts.query || {}, body: opts.body || {}, headers: opts.headers || {} });
 const H = (t) => ({ authorization: `Bearer ${t}` });
+const CUR_SHIFT = ((h) => (h >= 6 && h < 14) ? 'AM' : (h >= 14 && h < 22) ? 'PM' : 'Night')(new Date().getHours());
 
 try {
   await api('POST', '/api/setup', { body: { hostelName: 'somewhere nice', adminName: 'Ama', adminPin: '1234' } });
@@ -41,7 +43,7 @@ try {
   r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM' } });
   ok('open blocked without acknowledgement', r.status === 400, `got ${r.status}`);
   r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM', acknowledged: true } });
-  ok('shift opens when acknowledged', r.status === 201 && r.body.type === 'AM' && r.body.status === 'open');
+  ok('shift opens and auto-selects the due shift', r.status === 201 && r.body.type === CUR_SHIFT && r.body.status === 'open', `type ${r.body.type} vs due ${CUR_SHIFT}`);
   ok('no cash fields on shift', r.body.openingFloat === undefined);
   ok('records opening acknowledgement', r.body.openingAcknowledged === true);
   r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM', acknowledged: true } });
@@ -74,6 +76,7 @@ try {
 
   // cashier without reverseStatus cannot revert
   r = await api('POST', '/api/cashiers', { headers: H(adminT), body: { name: 'Yaw', pin: '4321', role: 'cashier', permissions: { advanceStatus: true, reverseStatus: false } } });
+  const yawId = r.body.id;
   const yawAuth = await api('POST', '/api/auth/pin', { body: { pin: '4321' } });
   r = await api('POST', `/api/orders/${B}/revert`, { headers: H(yawAuth.body.token), body: {} });
   ok('cashier without reverseStatus blocked', r.status === 403, `got ${r.status}`);
@@ -135,11 +138,31 @@ try {
   ok('shift history lists the closed shift', r.status === 200 && r.body.length === 1 && r.body[0].acknowledged === true);
 
   section('Handover auto-closes the prior open shift');
-  await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'AM', acknowledged: true } });
-  r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { type: 'PM', acknowledged: true, handover: true } });
-  ok('handover opens the new shift', r.status === 201 && r.body.type === 'PM');
+  await api('POST', '/api/shifts/open', { headers: H(adminT), body: { acknowledged: true } });
+  r = await api('POST', '/api/shifts/open', { headers: H(adminT), body: { acknowledged: true, handover: true } });
+  ok('handover opens the new (due) shift', r.status === 201 && r.body.type === CUR_SHIFT);
   r = await api('GET', '/api/shifts', { headers: H(adminT) });
   ok('only one shift open after handover', r.body.filter(s => s.status === 'open').length === 1);
+
+  section('Staff invitation email');
+  r = await api('POST', `/api/cashiers/${yawId}/invite`, { headers: H(adminT), body: { email: 'yaw@example.com', pin: '0000' } });
+  ok('invite rejected when the PIN is wrong', r.status === 400, `got ${r.status}`);
+  clearSentLog();
+  r = await api('POST', `/api/cashiers/${yawId}/invite`, { headers: H(adminT), body: { email: 'yaw@example.com', pin: '4321' } });
+  ok('invite sent with the correct PIN', r.status === 200 && r.body.sentTo === 'yaw@example.com', JSON.stringify(r.body));
+  ok('invitation email dispatched', sentLog().some((e) => e.to === 'yaw@example.com' && /invited/i.test(e.subject)));
+  r = await api('GET', '/api/cashiers', { headers: H(adminT) });
+  ok('cashier email stored from invite', (r.body.find((x) => x.id === yawId) || {}).email === 'yaw@example.com');
+  r = await api('POST', `/api/cashiers/${yawId}/invite`, { headers: H(yawAuth.body.token), body: { email: 'x@x.com', pin: '4321' } });
+  ok('non-manager cannot send invites', r.status === 403);
+  const inv = inviteEmail({ name: 'Yaw Mensah', role: 'admin', permissions: {}, pin: '4321' }, { hostelName: 'somewhere nice', accentColor: '#0f766e', baseUrl: 'https://x.netlify.app' }, { inviterName: 'Ama' });
+  ok('invite email includes the PIN', /4321/.test(inv.html));
+  ok('invite email states admin full access + app link', /Administrator/.test(inv.html) && /full access/i.test(inv.html) && /https:\/\/x\.netlify\.app\/app/.test(inv.html));
+  ok('invite email has no do-not-reply footer', !/do not reply/i.test(inv.html));
+
+  section('Multiple stuck-order alert recipients');
+  r = await api('PUT', '/api/settings', { headers: H(adminT), body: { alertRecipients: 'a@x.com, b@x.com; c@x.com\nnot-an-email, a@x.com' } });
+  ok('recipients parsed, de-duped, validated', Array.isArray(r.body.alertRecipients) && r.body.alertRecipients.length === 3 && r.body.alertRecipients.includes('a@x.com'), JSON.stringify(r.body.alertRecipients));
 
   section('Email formatting');
   const { orderEmail } = await import('../netlify/functions/lib/email.js');

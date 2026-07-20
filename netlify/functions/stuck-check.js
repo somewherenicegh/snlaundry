@@ -10,7 +10,11 @@ export async function runStuckCheck() {
   const stuck = await findStuckOrders(settings);
   if (!stuck.length) return { alerted: 0 };
 
-  const recipients = [settings.adminEmail, settings.receptionEmail].filter(Boolean);
+  const recipients = [...new Set(
+    [settings.adminEmail, settings.receptionEmail, ...(settings.alertRecipients || [])]
+      .map((e) => (e || '').trim().toLowerCase())
+      .filter(Boolean),
+  )];
   if (recipients.length) {
     const { subject, html } = stuckAlertEmail(stuck, settings, settings.stuckThresholdHours);
     for (const to of recipients) {

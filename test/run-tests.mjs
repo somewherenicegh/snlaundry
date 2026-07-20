@@ -178,10 +178,12 @@ try {
   const target = orders.find((o) => o.id === r3.body.id);
   target.acceptedAt = new Date(Date.now() - 5 * 3600000).toISOString();
   await store.saveCollection('orders', orders);
+  // add extra alert recipients (one duplicates the admin email → should de-dupe)
+  await api('PUT', '/api/settings', { headers: authH(adminToken), body: { alertRecipients: 'ops1@bluewave.test, ops2@bluewave.test, admin@bluewave.test' } });
   clearSentLog();
   const stuckRes = await runStuckCheck();
   ok('stuck check finds the 5h-old order', stuckRes.alerted === 1, JSON.stringify(stuckRes));
-  ok('alert emailed admin + reception', sentLog().filter((e) => /need attention/i.test(e.subject)).length === 2);
+  ok('alert emailed all unique recipients (admin+reception+2 extra)', sentLog().filter((e) => /need attention/i.test(e.subject)).length === 4, JSON.stringify(sentLog().map((e) => e.to)));
   const stuckRes2 = await runStuckCheck();
   ok('does not re-alert same order', stuckRes2.alerted === 0);
 

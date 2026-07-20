@@ -446,8 +446,8 @@ function inProgressListHtml(list, withChecks) {
   </div>`;
 }
 window.openStartShift = () => {
-  const now = new Date().getHours();
-  const guess = (now >= 6 && now < 14) ? 'AM' : (now >= 14 && now < 22) ? 'PM' : 'Night';
+  const due = currentShiftType();
+  const label = { AM: 'AM (06:00–14:00)', PM: 'PM (14:00–22:00)', Night: 'Night (22:00–06:00)' }[due];
   const ip = state.shift?.inProgress || [];
   const unpaid = ip.filter(o => o.paymentStatus !== 'paid').length;
   openModal(`
@@ -455,12 +455,8 @@ window.openStartShift = () => {
     <h3>Start shift</h3>
     <p class="hint">You're taking over <b>${ip.length}</b> laundry order(s) in progress${unpaid ? `, of which <b>${unpaid}</b> are still unpaid` : ''}. Confirm the items are present.</p>
     <div id="shMsg"></div>
-    <label>Shift</label>
-    <select id="shType">
-      <option value="AM" ${guess === 'AM' ? 'selected' : ''}>AM (06:00–14:00)</option>
-      <option value="PM" ${guess === 'PM' ? 'selected' : ''}>PM (14:00–22:00)</option>
-      <option value="Night" ${guess === 'Night' ? 'selected' : ''}>Night (22:00–06:00)</option>
-    </select>
+    <label>Shift <span class="muted">— set automatically for the current time</span></label>
+    <input value="${label}" disabled>
     <label>Laundry you're starting with (unpaid items flagged)</label>
     ${inProgressListHtml(ip, true)}
     <label style="display:flex;gap:9px;align-items:flex-start;font-weight:400;margin-top:14px">
@@ -469,7 +465,7 @@ window.openStartShift = () => {
     </label>
     <label>Note <span class="muted">(optional)</span></label>
     <input id="shNote" placeholder="e.g. handover from PM shift">
-    <button class="btn-full" style="margin-top:16px" onclick="doStartShift()">Start shift</button>
+    <button class="btn-full" style="margin-top:16px" onclick="doStartShift()">Start ${due} shift</button>
   `);
 };
 window.doStartShift = async () => {
@@ -477,7 +473,7 @@ window.doStartShift = async () => {
   const confirmedOrderIds = [...document.querySelectorAll('.ipchk:checked')].map(c => c.value);
   const handover = !!state._startHandover;
   try {
-    await api('POST', '/shifts/open', { type: $('#shType').value, note: $('#shNote').value.trim(), acknowledged: true, confirmedOrderIds, handover });
+    await api('POST', '/shifts/open', { type: currentShiftType(), note: $('#shNote').value.trim(), acknowledged: true, confirmedOrderIds, handover });
     state._startHandover = false;
     closeModal(); await refreshShift(); renderTab();
   } catch (e) { notice($('#shMsg'), 'err', e.message); }
@@ -897,8 +893,10 @@ async function renderCashiers(view) {
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div><b>${esc(c.name)}</b> <span class="pill">${c.role}</span> ${c.active ? '' : '<span class="badge b-cancelled">inactive</span>'}</div>
         </div>
+        ${c.email ? `<div class="muted" style="font-size:12px;margin-top:4px">${esc(c.email)}</div>` : ''}
         <div class="muted" style="font-size:13px;margin:8px 0">${c.role === 'admin' ? 'Full access to everything.' : (Object.entries(c.permissions).filter(([, v]) => v).map(([k]) => state.catalogue[k] || k).join(', ') || 'No permissions set')}</div>
-        <div style="display:flex;gap:8px"><button class="small secondary" onclick='openCashier(${JSON.stringify(c)})'>Edit</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="small secondary" onclick='openCashier(${JSON.stringify(c)})'>Edit</button>
+        <button class="small" onclick='openInvite(${JSON.stringify(c)})'>✉ Invite</button>
         <button class="small danger" onclick="delCashier('${c.id}','${esc(c.name)}')">Remove</button></div>
       </div>`).join('')}</div>`;
 }
@@ -911,6 +909,7 @@ window.openCashier = (c) => {
     <h3>${c ? 'Edit' : 'Add'} cashier</h3>
     <div id="cshMsg"></div>
     <label>Name</label><input id="cshName" value="${c ? esc(c.name) : ''}">
+    <label>Email <span class="muted">(optional — for invitations)</span></label><input id="cshEmail" type="email" value="${c ? esc(c.email || '') : ''}" placeholder="name@example.com">
     <label>Role</label>
     <select id="cshRole" onchange="document.getElementById('permBox').style.display=this.value==='admin'?'none':'block'">
       <option value="cashier" ${c && c.role === 'cashier' ? 'selected' : ''}>Cashier (limited)</option>
@@ -930,7 +929,7 @@ window.saveCashier = async (id) => {
   const role = $('#cshRole').value;
   const permissions = {};
   document.querySelectorAll('[data-perm]').forEach(cb => permissions[cb.dataset.perm] = cb.checked);
-  const body = { name: $('#cshName').value.trim(), role, permissions };
+  const body = { name: $('#cshName').value.trim(), email: $('#cshEmail').value.trim(), role, permissions };
   const pin = $('#cshPin').value.trim(); if (pin) body.pin = pin;
   if ($('#cshActive')) body.active = $('#cshActive').checked;
   try {
@@ -940,6 +939,28 @@ window.saveCashier = async (id) => {
   } catch (e) { notice($('#cshMsg'), 'err', e.message); }
 };
 window.delCashier = async (id, name) => { if (!confirm(`Remove ${name}?`)) return; try { await api('DELETE', `/cashiers/${id}`); renderCashiers($('#view')); } catch (e) { alert(e.message); } };
+window.openInvite = (c) => {
+  openModal(`
+    <button class="ghost small close" onclick="closeModal()">✕</button>
+    <h3>Invite ${esc(c.name)}</h3>
+    <p class="hint">Sends a branded email with a link to the app and ${esc(c.name)}'s PIN (${c.role === 'admin' ? 'full Administrator access' : 'Cashier access'}). Enter their current PIN so it can be included — we verify it first.</p>
+    <div id="invMsg"></div>
+    <label>Email address</label>
+    <input id="invEmail" type="email" value="${esc(c.email || '')}" placeholder="name@example.com">
+    <label>${esc(c.name)}'s current PIN</label>
+    <input id="invPin" inputmode="numeric" maxlength="8" placeholder="e.g. 4821">
+    <button class="btn-full" style="margin-top:16px" onclick="doInvite('${c.id}')">Send invitation</button>
+  `);
+};
+window.doInvite = async (id) => {
+  try {
+    const r = await api('POST', `/cashiers/${id}/invite`, { email: $('#invEmail').value.trim(), pin: $('#invPin').value.trim() });
+    notice($('#invMsg'), r.dryRun ? 'info' : 'ok', r.dryRun
+      ? `Invitation prepared for ${r.sentTo}. Email isn't configured yet, so it was logged but not delivered — set up email to send for real.`
+      : `Invitation sent to ${r.sentTo}. ✓`);
+    setTimeout(() => { closeModal(); renderCashiers($('#view')); }, 1600);
+  } catch (e) { notice($('#invMsg'), 'err', e.message); }
+};
 
 // ---------------- SETTINGS ----------------
 const CURRENCIES = [
@@ -985,6 +1006,8 @@ async function renderSettings(view) {
         <div><label>Admin alert email</label><input id="stAdminEmail" type="email" value="${esc(s.adminEmail || '')}"></div>
         <div><label>Reception alert email</label><input id="stRecEmail" type="email" value="${esc(s.receptionEmail || '')}"></div>
       </div>
+      <label>Additional alert recipients <span class="muted">(comma or new-line separated)</span></label>
+      <textarea id="stAlertRecipients" placeholder="manager@hostelaccra.com, owner@hostelaccra.com">${esc((s.alertRecipients || []).join(', '))}</textarea>
     </div>
     <div class="card">
       <h3 style="margin-top:0">Public site URL</h3>
@@ -1042,6 +1065,7 @@ window.saveSettings = async () => {
     currency: { code, symbol }, pricePerLoad: $('#stPrice').value, piecesPerLoad: $('#stPieces').value,
     turnaroundHours: $('#stTurn').value, stuckThresholdHours: $('#stStuck').value,
     adminEmail: $('#stAdminEmail').value.trim(), receptionEmail: $('#stRecEmail').value.trim(),
+    alertRecipients: $('#stAlertRecipients').value,
     baseUrl: $('#stBase').value.trim(),
   };
   if (state._newLogo !== undefined) body.logoDataUrl = state._newLogo;

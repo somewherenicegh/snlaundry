@@ -156,6 +156,62 @@ export function orderEmail(kind, order, settings) {
   return { subject: t.subject, html: shell(settings, t.body) };
 }
 
+// Permission key → friendly phrase, for the invitation email.
+const PERM_PHRASES = {
+  acceptOrders: 'accept new orders', advanceStatus: 'move orders forward', reverseStatus: 'move orders back',
+  modifyAccepted: 'edit accepted orders', cancelOrders: 'cancel orders', takePayment: 'take payments',
+  messageGuests: 'reply to guests', viewReports: 'view reports', exportReports: 'export reports',
+  manageCashiers: 'manage staff', manageSettings: 'change settings',
+};
+function permsSentence(permissions = {}) {
+  const list = Object.keys(PERM_PHRASES).filter((k) => permissions[k]).map((k) => PERM_PHRASES[k]);
+  if (!list.length) return 'Your administrator will set what you can do.';
+  return 'You can ' + (list.length > 1 ? list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1] : list[0]) + '.';
+}
+
+// A warm, branded invitation for a new staff member (admin or cashier).
+export function inviteEmail(cashier, settings, opts = {}) {
+  const accent = settings.accentColor || '#0f766e';
+  const first = firstName(cashier.name);
+  const isAdmin = cashier.role === 'admin';
+  const roleLine = isAdmin ? 'Administrator — full access' : 'Cashier';
+  const perms = isAdmin
+    ? 'As an administrator you have full access: orders, payments, reports, staff and settings.'
+    : permsSentence(cashier.permissions);
+  const appUrl = settings.baseUrl ? `${settings.baseUrl.replace(/\/$/, '')}/app` : null;
+
+  const pinBox = `
+    <div style="text-align:center;margin:22px 0">
+      <div style="display:inline-block;background:#FFF8ED;border:1px dashed ${accent};border-radius:12px;padding:14px 30px">
+        <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#9ca3af">Your PIN</div>
+        <div style="font-size:30px;font-weight:700;letter-spacing:8px;color:${accent};font-family:monospace">${escapeHtml(String(cashier.pin))}</div>
+      </div>
+      <div style="font-size:12px;color:#9ca3af;margin-top:6px">Keep this private — it's how you sign in.</div>
+    </div>`;
+
+  const button = appUrl
+    ? `<p style="text-align:center;margin:24px 0">
+         <a href="${appUrl}" style="background:${accent};color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:600;display:inline-block">Open the laundry app</a>
+       </p>
+       <p style="text-align:center;font-size:12px;color:#9ca3af;word-break:break-all">${appUrl}</p>`
+    : `<p style="font-size:14px;color:#6b7280">Open the laundry app on the reception terminal to sign in.</p>`;
+
+  const body = `
+    <p style="font-size:16px">Welcome aboard, ${escapeHtml(first)}! 👋</p>
+    <p>${opts.inviterName ? escapeHtml(opts.inviterName) + ' has given you' : "You've been given"} <b>${roleLine}</b> access to the ${escapeHtml(settings.hostelName || 'laundry')} laundry system.</p>
+    ${pinBox}
+    <p style="margin:0 0 4px"><b>How to sign in</b></p>
+    <p style="margin:0 0 16px;color:#4b5563">Open the app, then tap your PIN on the lock screen — no email or password needed.</p>
+    <p style="color:#6b7280;font-size:14px">${perms}</p>
+    ${button}
+    <p style="font-size:13px;color:#9ca3af;margin-top:18px">If you weren't expecting this, you can ignore this email.</p>`;
+
+  return {
+    subject: `You're invited to ${settings.hostelName || 'the laundry'} — ${isAdmin ? 'Administrator' : 'Cashier'} access`,
+    html: shell(settings, body),
+  };
+}
+
 export function stuckAlertEmail(orders, settings, thresholdHours) {
   const rows = orders
     .map(

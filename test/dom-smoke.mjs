@@ -105,7 +105,7 @@ try {
   ok('shift bar offers Start shift', /Start shift/.test(w.document.querySelector('#view').innerHTML));
   // open the start-shift modal (laundry handover — acknowledge, no cash float)
   w.openStartShift();
-  ok('start-shift modal has shift type + acknowledgement (no cash float)', !!w.document.querySelector('#shType') && !!w.document.querySelector('#shAck') && !w.document.querySelector('#shFloat'));
+  ok('start-shift modal auto-selects shift (no chooser), has acknowledgement, no cash float', !!w.document.querySelector('#shAck') && !w.document.querySelector('#shType') && !w.document.querySelector('#shFloat'));
   w.closeModal();
   ok('admin-selected hover colour applied (--hover)', w.document.documentElement.style.getPropertyValue('--hover').toUpperCase() === '#FFF8ED');
 

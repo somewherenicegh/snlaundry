@@ -199,6 +199,7 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
       const id = parts[1];
       if (m === 'GET' && !id) { await requirePerm(headers, 'manageCashiers'); return json(200, await L.listCashiers()); }
       if (m === 'POST' && !id) { await requirePerm(headers, 'manageCashiers'); return json(201, await L.createCashier(body)); }
+      if (m === 'POST' && id && parts[2] === 'invite') { const u = await requirePerm(headers, 'manageCashiers'); return json(200, await L.inviteCashier(id, body, u)); }
       if (m === 'PATCH' && id) { const u = await requirePerm(headers, 'manageCashiers'); return json(200, await L.updateCashier(id, body, u)); }
       if (m === 'DELETE' && id) { await requirePerm(headers, 'manageCashiers'); return json(200, await L.deleteCashier(id)); }
     }

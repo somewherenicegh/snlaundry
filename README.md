@@ -31,8 +31,9 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - Full audit log on every order (who did what, when — including emails sent)
 - Guest message inbox with unread badges
 - **Access levels**: admin chooses exactly what each cashier can do
+- **Branded staff invitations**: email a new admin/cashier a welcome message with the app link, their role, and their PIN (Cashiers → Invite; the PIN is verified before it's included)
 - **Only admins can modify an already-accepted order** (enforced server-side)
-- Email alert to admin + reception when an order sits at "Accepted" too long (default 4h, admin-adjustable)
+- Email alerts to **any number of recipients** when an order sits at "Accepted" too long (default 4h, admin-adjustable)
 - Settings: pick currency, upload logo, set property name, price per load, and max pieces per load
 
 **Pricing model:** flat price **per load**. Loads = ⌈items ÷ max-pieces-per-load⌉ (default max 25/load, admin-configurable). Reception can override the price on any order.
@@ -43,7 +44,7 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - An order **cannot be marked picked up until payment is collected**.
 - **Reverse** an order a stage (e.g. ready → cleaning) — admins and any cashier granted the *reverseStatus* permission.
 - Reports show **who** accepted / cleaned / marked ready / took payment, plus breakdowns **by shift** (AM 06–14, PM 14–22, Night 22–06) and **by staff**. The report can also be **filtered and exported (CSV/PDF) to a single shift** within any date range.
-- **Shift handovers:** opening *and* closing a shift lists the laundry currently in progress (with **unpaid items flagged**) and requires the receptionist to tick the items and acknowledge they've physically checked the laundry area. No cash counting.
+- **Shift handovers:** opening *and* closing a shift lists the laundry currently in progress (with **unpaid items flagged**) and requires the receptionist to tick the items and acknowledge they've physically checked the laundry area. No cash counting. The shift (AM/PM/Night) is **auto-selected for the current time** and can't be set to a different one.
 - **Repeating reception chimes**, each until resolved: a new-order ping (until every order is accepted), the same urgent ping for orders **stuck past the threshold** (default 4h), a new-message ping (until reception reads it), and a calmer start-a-shift chime (until a shift is open). **Only an admin can mute** the sound.
 - **Auto-lock** after 5 minutes of inactivity.
 - **Shift-boundary lock:** when the clock crosses into a new shift period, the terminal locks and asks whether to start a new shift or continue the current one — continuing requires the PIN of the cashier who started that shift. If they continue, the same prompt reappears on **every** subsequent auto-lock until a new shift is finally started.
