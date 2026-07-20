@@ -171,6 +171,12 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
       return json(200, await L.deleteOrdersInRange(body));
     }
 
+    // ---------- admin: order number sequence ----------
+    if (parts[0] === 'sequence') {
+      if (m === 'GET') { await requireAdmin(headers); return json(200, { next: await L.getNextOrderNumber() }); }
+      if (m === 'POST') { await requireAdmin(headers); return json(200, await L.setOrderSequence(body.next)); }
+    }
+
     // ---------- shifts (till sessions) ----------
     if (parts[0] === 'shifts') {
       if (m === 'GET' && parts[1] === 'current') {

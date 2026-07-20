@@ -172,6 +172,38 @@ try {
   ok('email footer line removed', !/do not reply directly/i.test(em.html));
   ok('status badge is on its own row, separate from the sentence', /Accepted<\/span><\/p>\s*<p[^>]*>Your laundry order/.test(em.html), 'badge not separated');
 
+  section('Price change requires a reason');
+  r = await api('PATCH', `/api/orders/${B}`, { headers: H(adminT), body: { price: 99 } });
+  ok('price change without a reason is blocked', r.status === 400, `got ${r.status}`);
+  r = await api('PATCH', `/api/orders/${B}`, { headers: H(adminT), body: { price: 99, priceReason: 'added express service' } });
+  ok('price change with a reason is accepted', r.status === 200 && r.body.price === 99);
+  ok('reason recorded in the order log', r.body.logs.some((l) => /reason: added express service/.test(l.detail)));
+
+  section('Admin can reset the order-number sequence');
+  r = await api('GET', '/api/sequence', { headers: H(adminT) });
+  ok('reads the next order number', typeof r.body.next === 'number');
+  r = await api('POST', '/api/sequence', { headers: H(adminT), body: { next: 5000 } });
+  ok('sets the next order number', r.status === 200 && r.body.next === 5000);
+  r = await api('POST', '/api/orders', { body: { guestName: 'Seq Test', guestEmail: 'seq@example.com', items: 3 } });
+  ok('the next new order uses it', r.body.number === 5000, `got ${r.body.number}`);
+  r = await api('POST', '/api/sequence', { headers: H(yawAuth.body.token), body: { next: 10 } });
+  ok('non-admin cannot change the sequence', r.status === 403);
+
+  section('Default pickup is 6PM the next day');
+  let pu = await api('POST', '/api/orders', { body: { guestName: 'Pick Up', guestEmail: 'pu@example.com', items: 2 } });
+  await api('POST', `/api/orders/${pu.body.id}/accept`, { headers: H(adminT), body: { room: 'Duafe' } });
+  r = await api('GET', `/api/orders/public/${pu.body.publicId}`);
+  const pk = new Date(r.body.pickupAt);
+  ok('pickup defaults to 18:00', pk.getHours() === 18 && pk.getMinutes() === 0, r.body.pickupAt);
+
+  section('Completed order gives a friendly advance message');
+  r = await api('POST', `/api/orders/${A}/advance`, { headers: H(adminT), body: {} });
+  ok('advancing a completed order is not a scary error', r.status === 409 && /already been picked up/i.test(r.body.error), JSON.stringify(r.body));
+
+  section('Shift activity summary');
+  r = await api('GET', '/api/shifts/current', { headers: H(adminT) });
+  ok('current shift includes an activity summary', r.body.open === true && !!r.body.activity && typeof r.body.activity.received.count === 'number' && typeof r.body.activity.payments.total === 'number', JSON.stringify(r.body.activity || {}));
+
   section('Admin: delete orders in a timeframe');
   const before = (await api('GET', '/api/orders', { headers: H(adminT) })).body.length;
   ok('there are orders to delete', before > 0);

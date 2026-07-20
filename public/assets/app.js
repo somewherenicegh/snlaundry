@@ -362,8 +362,9 @@ async function enterApp() {
   checkShiftBoundary();
   if (state.pendingStartShift) { state.pendingStartShift = false; state._startHandover = true; openStartShift(); }
   if (state.poll) clearInterval(state.poll);
-  state.poll = setInterval(() => {
-    refreshAlerts(); // watch new orders, stuck orders & messages even when off those tabs
+  state.poll = setInterval(async () => {
+    await refreshAlerts(); // watch new orders, stuck orders & messages even when off those tabs
+    if (state.tab === 'orders') await refreshShift(); // keep the shift bar's in-progress count current
     if (['orders', 'messages'].includes(state.tab)) renderTab(true);
   }, 15000);
   // Repeating alerts (priority: new order → stuck order → unread message → no shift open).
@@ -478,14 +479,23 @@ window.doStartShift = async () => {
     closeModal(); await refreshShift(); renderTab();
   } catch (e) { notice($('#shMsg'), 'err', e.message); }
 };
-window.openCloseShift = () => {
-  const s = state.shift.shift; const ip = state.shift.inProgress || [];
+window.openCloseShift = async () => {
+  await refreshShift(); // refresh so picked-up orders aren't shown as still in progress
+  const s = state.shift.shift; const ip = state.shift.inProgress || []; const a = state.shift.activity || {};
+  const cur = () => state.settings?.currency?.symbol || '';
+  const m2 = (n) => `${cur()}${Number(n || 0).toFixed(2)}`;
   openModal(`
     <button class="ghost small close" onclick="closeModal()">✕</button>
     <h3>Close ${s.type} shift</h3>
-    <p class="hint">Walk the laundry area and confirm the items below are physically present, then acknowledge.</p>
+    <p class="hint">Here's what happened this shift. Confirm the laundry still in progress is present, then acknowledge.</p>
     <div id="shMsg"></div>
-    <label>Laundry in progress (${ip.length})</label>
+    <label>Shift summary</label>
+    <table class="data" style="margin-bottom:10px">
+      <tr><td class="muted">Laundry received</td><td style="text-align:right">${a.received?.count || 0} order(s) · ${a.received?.items || 0} items · ${m2(a.received?.value)}</td></tr>
+      <tr><td class="muted">Payments taken</td><td style="text-align:right">${a.payments?.count || 0} · <b>${m2(a.payments?.total)}</b> (${m2(a.payments?.cash)} cash / ${m2(a.payments?.card)} card)</td></tr>
+      <tr><td class="muted">Picked up</td><td style="text-align:right">${a.pickedUp?.count || 0} order(s)</td></tr>
+    </table>
+    <label>Laundry still in progress (${ip.length}) — confirm present</label>
     ${inProgressListHtml(ip, true)}
     <label style="display:flex;gap:9px;align-items:flex-start;font-weight:400;margin-top:14px">
       <input type="checkbox" id="ackChk" style="width:auto;margin-top:3px">
@@ -648,7 +658,8 @@ window.openOrder = async (id) => {
 window.openAccept = async (id) => {
   const o = (window._orders || []).find(x => x.id === id) || await api('GET', `/orders/${id}`);
   const est = (o.loads || 1) * (state.settings?.pricePerLoad || 0);
-  const pickupDefault = toLocalInput(new Date(Date.now() + (state.settings?.turnaroundHours || 24) * 3600000).toISOString());
+  const _pk = new Date(); _pk.setDate(_pk.getDate() + 1); _pk.setHours(18, 0, 0, 0);
+  const pickupDefault = toLocalInput(_pk.toISOString());
   openModal(`
     <button class="ghost small close" onclick="closeModal()">✕</button>
     <h3>Accept order #${o.number}</h3>
@@ -658,7 +669,7 @@ window.openAccept = async (id) => {
     <input id="acRoom" placeholder="e.g. Duafe" value="${esc(o.room || '')}">
     <label>Ready for pickup</label>
     <input id="acPickup" type="datetime-local" value="${pickupDefault}">
-    <p class="muted" style="font-size:12px;margin:6px 0 0">Standard turnaround is ${state.settings?.turnaroundHours || 24}h — adjust if needed.</p>
+    <p class="muted" style="font-size:12px;margin:6px 0 0">Defaults to 6:00 PM tomorrow — adjust if needed.</p>
     <label>Price (${cur()})</label>
     <input id="acPrice" type="number" step="0.01" min="0" value="${est.toFixed(2)}">
     <p class="muted" style="font-size:12px;margin:6px 0 0">${o.loads} load(s) × ${money(state.settings?.pricePerLoad)} = ${money(est)} (editable).</p>
@@ -694,6 +705,8 @@ window.openModify = async (id) => {
     <label>Room name</label><input id="mdRoom" placeholder="e.g. Duafe" value="${esc(o.room || '')}">
     <label>Items</label><input id="mdItems" type="number" min="1" value="${o.items}">
     <label>Price (${cur()})</label><input id="mdPrice" type="number" step="0.01" min="0" value="${o.price ?? ''}">
+    <label>Reason for price change <span class="muted">(required if you change the price)</span></label>
+    <input id="mdPriceReason" placeholder="e.g. added express service / extra items">
     <label>Ready by</label><input id="mdPickup" type="datetime-local" value="${o.pickupAt ? toLocalInput(o.pickupAt) : ''}">
     <label>Payment</label>
     <select id="mdPayStatus" onchange="document.getElementById('mdMethodRow').style.display=this.value==='paid'?'block':'none'">
@@ -711,6 +724,7 @@ window.doModify = async (id) => {
   try {
     await api('PATCH', `/orders/${id}`, {
       room: $('#mdRoom').value.trim(), items: $('#mdItems').value, price: $('#mdPrice').value,
+      priceReason: $('#mdPriceReason').value.trim(),
       pickupAt: $('#mdPickup').value ? new Date($('#mdPickup').value).toISOString() : undefined,
       paymentStatus: $('#mdPayStatus').value, paymentMethod: $('#mdMethod').value,
     });
@@ -718,7 +732,14 @@ window.doModify = async (id) => {
   } catch (e) { notice($('#modMsg'), 'err', e.message); }
 };
 
-window.advance = async (id, close) => { try { await api('POST', `/orders/${id}/advance`, {}); if (close) closeModal(); renderTab(); } catch (e) { alert(e.message); } };
+window.advance = async (id, close) => {
+  try { await api('POST', `/orders/${id}/advance`, {}); if (close) closeModal(); renderTab(); }
+  catch (e) {
+    // A stale re-click on an order that's already picked up shouldn't alarm anyone.
+    if (/already been picked up|already .*cancelled/i.test(e.message)) { if (close) closeModal(); renderTab(); }
+    else alert(e.message);
+  }
+};
 window.cancelOrder = async (id) => { const reason = prompt('Reason for cancelling (optional):'); if (reason === null) return; try { await api('POST', `/orders/${id}/cancel`, { reason }); closeModal(); renderTab(); } catch (e) { alert(e.message); } };
 window.revert = async (id, close) => { if (!confirm('Move this order back one stage?')) return; try { await api('POST', `/orders/${id}/revert`, {}); if (close) closeModal(); renderTab(); } catch (e) { alert(e.message); } };
 window.takePayment = async (id) => {
@@ -842,8 +863,8 @@ async function loadShiftHistory(from, to) {
   try { shifts = await api('GET', `/shifts?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`); } catch { return; }
   if (!shifts.length) return;
   $('#shiftHistory').innerHTML = `<div class="card"><h3 style="margin-top:0">Shift handover history</h3>
-    <div style="overflow-x:auto"><table class="data"><thead><tr><th>Opened</th><th>Cashier</th><th>Shift</th><th>Closed</th><th>In progress at close</th><th>Items confirmed</th><th>Area checked</th><th>Note</th><th>Status</th></tr></thead>
-    <tbody>${shifts.map(s => `<tr><td>${fmt(s.openedAt)}</td><td>${esc(s.cashierName)}</td><td>${s.type}</td><td>${s.closedAt ? fmt(s.closedAt) : '—'}</td><td>${s.closingInProgress != null ? s.closingInProgress : '—'}</td><td>${(s.confirmedOrderIds || []).length || '—'}</td><td>${s.acknowledged ? '✓ Yes' : '—'}</td><td>${esc(s.closingNote || s.openingNote || '')}</td><td>${s.status === 'open' ? '<span class="pill">open</span>' : 'closed'}</td></tr>`).join('')}</tbody></table></div></div>`;
+    <div class="table-wrap"><table class="data"><thead><tr><th>Opened</th><th>Cashier</th><th>Shift</th><th>Closed</th><th>Received</th><th>Paid</th><th>Picked up</th><th>In progress</th><th>Area checked</th><th>Status</th></tr></thead>
+    <tbody>${shifts.map(s => { const a = s.activity || {}; return `<tr><td>${fmt(s.openedAt)}</td><td>${esc(s.cashierName)}</td><td>${s.type}</td><td>${s.closedAt ? fmt(s.closedAt) : '—'}</td><td>${a.received ? a.received.count : '—'}</td><td>${a.payments ? money(a.payments.total) : '—'}</td><td>${a.pickedUp ? a.pickedUp.count : '—'}</td><td>${s.closingInProgress != null ? s.closingInProgress : '—'}</td><td>${s.acknowledged ? '✓' : '—'}</td><td>${s.status === 'open' ? '<span class="pill">open</span>' : 'closed'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
 }
 const SHIFT_TIME = { AM: '06:00–14:00', PM: '14:00–22:00', Night: '22:00–06:00' };
 function nm(ref) { return ref && ref.name ? ref.name : '—'; }
@@ -971,6 +992,7 @@ const CURRENCIES = [
 ];
 async function renderSettings(view) {
   const s = state.settings = await api('GET', '/settings');
+  const seq = await api('GET', '/sequence').catch(() => ({ next: '—' }));
   const orderUrl = (s.baseUrl || location.origin) + '/order';
   view.innerHTML = `<h2>Settings</h2>
     <div id="setMsg"></div>
@@ -1025,6 +1047,16 @@ async function renderSettings(view) {
       <button class="small secondary" onclick="downloadQr()">Download QR</button>
     </div>
 
+    <div class="card">
+      <h3 style="margin-top:0">Order numbering</h3>
+      <p class="hint">The next order will be <b>#<span id="seqCurrent">${seq.next}</span></b>. Change the next number below (e.g. to restart the sequence).</p>
+      <div id="seqMsg"></div>
+      <div class="toolbar">
+        <div><label>Next order number</label><input id="seqNext" type="number" min="1" placeholder="${seq.next}"></div>
+        <button onclick="saveSequence()">Update</button>
+      </div>
+    </div>
+
     <div class="card" style="margin-top:20px;border:1px solid #f0cfc9">
       <h3 style="margin-top:0;color:var(--danger)">Delete orders</h3>
       <p class="hint">Permanently remove all orders created within a date range. This cannot be undone.</p>
@@ -1037,6 +1069,17 @@ async function renderSettings(view) {
     </div>`;
   drawQr(orderUrl);
 }
+window.saveSequence = async () => {
+  const next = parseInt($('#seqNext').value, 10);
+  if (!next || next < 1) return notice($('#seqMsg'), 'err', 'Enter a positive whole number.');
+  if (!confirm(`Set the next order number to #${next}?`)) return;
+  try {
+    const r = await api('POST', '/sequence', { next });
+    $('#seqCurrent').textContent = r.next;
+    $('#seqNext').value = '';
+    notice($('#seqMsg'), 'ok', `The next order will be #${r.next}.`);
+  } catch (e) { notice($('#seqMsg'), 'err', e.message); }
+};
 window.deleteOrdersRange = async () => {
   const from = $('#delFrom').value, to = $('#delTo').value;
   if (!from || !to) return notice($('#delMsg'), 'err', 'Choose both a start and end date.');

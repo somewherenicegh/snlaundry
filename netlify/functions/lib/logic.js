@@ -278,8 +278,8 @@ export async function acceptOrder(id, data, actor) {
     o.price = data.price != null && data.price !== ''
       ? Math.max(0, Number(data.price))
       : o.loads * settings.pricePerLoad;
-    // Default pickup = now + turnaround, unless reception picked one.
-    o.pickupAt = data.pickupAt || new Date(Date.now() + settings.turnaroundHours * 3600000).toISOString();
+    // Default pickup = 6:00 PM the following day, unless reception picked one.
+    o.pickupAt = data.pickupAt || nextDaySixPM();
     addLog(o, actor, 'accepted',
       `Accepted · room ${o.room || '—'} · ${settings.currency.symbol}${o.price} · ready by ${o.pickupAt}`);
     // Reception may collect payment right at acceptance.
@@ -294,6 +294,8 @@ export async function acceptOrder(id, data, actor) {
 export async function advanceStatus(id, target, actor) {
   const settings = await getSettings();
   return mutateOrder(id, async (o) => {
+    if (o.status === 'completed') throw httpError(409, 'This order has already been picked up.');
+    if (o.status === 'cancelled') throw httpError(409, 'This order was cancelled.');
     const expected = FLOW[o.status];
     if (!expected) throw httpError(409, `Cannot advance from ${o.status}`);
     if (target && target !== expected) throw httpError(400, `Next stage must be ${expected}`);
@@ -360,7 +362,15 @@ export async function modifyOrder(id, patch, actor) {
       set('items', n, 'items');
       o.loads = computeLoads(o.items, settings.piecesPerLoad);
     }
-    if (patch.price != null && patch.price !== '') set('price', Math.max(0, Number(patch.price)), 'price');
+    if (patch.price != null && patch.price !== '') {
+      const np = Math.max(0, Number(patch.price));
+      if (np !== Number(o.price)) {
+        const reason = String(patch.priceReason || '').trim();
+        if (!reason) throw httpError(400, 'Please give a reason for changing the price.');
+        changes.push(`price: ${settings.currency.symbol}${o.price} → ${settings.currency.symbol}${np} (reason: ${reason})`);
+        o.price = np;
+      }
+    }
     if (patch.pickupAt != null) set('pickupAt', patch.pickupAt, 'pickup');
     if (patch.paymentTiming != null) set('paymentTiming', patch.paymentTiming === 'now' ? 'now' : 'pickup', 'timing');
     if (patch.paymentStatus != null) {
@@ -672,6 +682,7 @@ export async function closeShift({ note, acknowledged, confirmedOrderIds }, acto
   if (!shift) throw httpError(404, 'You have no open shift.');
   if (!acknowledged) throw httpError(400, 'Please confirm you have checked the laundry area and the items are present.');
   const inProgress = await inProgressOrders();
+  shift.activity = await shiftActivity(shift);
   shift.status = 'closed';
   shift.closedAt = nowIso();
   shift.closingNote = note ? String(note).slice(0, 300) : '';
@@ -691,11 +702,31 @@ export async function listShifts({ from, to } = {}) {
     .sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
 }
 
+// Summary of what happened during a shift: laundry received, payments taken, picked up.
+async function shiftActivity(shift) {
+  const orders = await getCollection(K_ORDERS);
+  const since = new Date(shift.openedAt).getTime();
+  const inWin = (iso) => iso && new Date(iso).getTime() >= since;
+  const received = orders.filter((o) => inWin(o.acceptedAt));
+  const pickedUp = orders.filter((o) => inWin(o.completedAt));
+  const paid = orders.filter((o) => o.paidShiftId === shift.id);
+  const val = (arr) => round2(sum(arr.map((o) => Number(o.price) || 0)));
+  return {
+    received: { count: received.length, items: sum(received.map((o) => o.items)), loads: sum(received.map((o) => o.loads)), value: val(received) },
+    pickedUp: { count: pickedUp.length, value: val(pickedUp) },
+    payments: {
+      count: paid.length, total: val(paid),
+      cash: val(paid.filter((o) => o.paymentMethod === 'cash')),
+      card: val(paid.filter((o) => o.paymentMethod === 'card')),
+    },
+  };
+}
+
 export async function currentShiftView(actor) {
   const inProgress = await inProgressOrders();
   const shift = actor?.id ? await getOpenShiftFor(actor.id) : null;
   if (!shift) return { open: false, inProgress };
-  return { open: true, shift, inProgress };
+  return { open: true, shift, inProgress, activity: await shiftActivity(shift) };
 }
 
 // -------------------------------------------------------------- internals ----
@@ -737,6 +768,30 @@ async function nextOrderNumber() {
   meta.orderSeq = (meta.orderSeq || 1000) + 1;
   await writeJSON(K_META, meta);
   return meta.orderSeq;
+}
+
+// 6:00 PM the following day (server clock).
+function nextDaySixPM() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(18, 0, 0, 0);
+  return d.toISOString();
+}
+
+// The number the NEXT created order will get.
+export async function getNextOrderNumber() {
+  const meta = (await readJSON(K_META, { orderSeq: 1000 })) || { orderSeq: 1000 };
+  return (meta.orderSeq || 1000) + 1;
+}
+
+// Admin: set what the next order number will be.
+export async function setOrderSequence(next) {
+  const n = Math.floor(Number(next));
+  if (!n || n < 1) throw httpError(400, 'The next order number must be a positive whole number.');
+  const meta = (await readJSON(K_META, { orderSeq: 1000 })) || { orderSeq: 1000 };
+  meta.orderSeq = n - 1; // so the next created order is exactly n
+  await writeJSON(K_META, meta);
+  return { next: n };
 }
 
 async function pinInUse(pin, cashiers, exceptId) {

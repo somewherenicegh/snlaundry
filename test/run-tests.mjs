@@ -119,8 +119,10 @@ try {
   section('Access control: only admin modifies accepted orders');
   r = await api('PATCH', `/api/orders/${orderId}`, { headers: authH(benToken), body: { price: 5 } });
   ok('cashier without modifyAccepted is blocked (403)', r.status === 403, `got ${r.status}`);
-  r = await api('PATCH', `/api/orders/${orderId}`, { headers: authH(adminToken), body: { price: 20, room: '205' } });
+  r = await api('PATCH', `/api/orders/${orderId}`, { headers: authH(adminToken), body: { price: 20, room: '205', priceReason: 'test adjustment' } });
   ok('admin can modify accepted order', r.status === 200 && r.body.price === 20 && r.body.room === '205');
+  r = await api('PATCH', `/api/orders/${orderId}`, { headers: authH(adminToken), body: { price: 15 } });
+  ok('price change without reason is rejected', r.status === 400);
 
   // ---- advance through cycle w/ emails ----
   section('Status cycle accepted → cleaning → ready → completed');
