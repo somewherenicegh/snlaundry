@@ -164,6 +164,13 @@ function notice(el, kind, text) { el.innerHTML = text ? `<div class="notice ${ki
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+  // When a new version of the app takes control, reload once so fresh code loads.
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    location.reload();
+  });
 }
 function pushSupported() {
   return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;

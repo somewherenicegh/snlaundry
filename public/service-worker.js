@@ -1,8 +1,12 @@
 // Service worker: makes the app installable, works offline, and receives Web Push
 // notifications so reception is alerted even when the app tab is in the background
 // or fully closed.
+//
+// IMPORTANT: the app shell (HTML/JS/CSS) uses a NETWORK-FIRST strategy so code
+// updates always show up when online. Only images/icons are cache-first. Bump
+// CACHE whenever you want to force old caches to be cleared.
 
-const CACHE = 'laundry-v9';
+const CACHE = 'laundry-v15';
 const CORE = [
   '/app', '/app.html', '/assets/app.js', '/assets/styles.css',
   '/favicon.svg', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest',
@@ -20,23 +24,35 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Never cache API calls; cache-first for static assets; network-first for pages.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/api/')) return; // let the network handle API
+  if (url.pathname.startsWith('/api/')) return; // never touch the API — always network
 
-  if (req.mode === 'navigate') {
-    event.respondWith(fetch(req).catch(() => caches.match('/app.html')));
+  const isShell = req.mode === 'navigate' || /\.(?:js|css|html)$/.test(url.pathname);
+
+  if (isShell) {
+    // Network-first: fresh code when online, cached copy only as an offline fallback.
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+          return res;
+        })
+        .catch(() => caches.match(req).then((hit) => hit || caches.match('/app.html'))),
+    );
     return;
   }
+
+  // Images / icons / manifest: cache-first (they rarely change).
   event.respondWith(
     caches.match(req).then((hit) => hit || fetch(req).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
       return res;
-    }).catch(() => hit)),
+    })),
   );
 });
 
