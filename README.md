@@ -27,7 +27,7 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - Accept orders: set room, pickup date & time, price, and payment (paid → cash/card, or pay at pickup)
 - Order cycle: **New → Accepted → Cleaning → Ready → Completed** (guest emailed at accepted/cleaning/ready/completed)
 - Pickup defaults to **6:00 PM the next day**; reception can pick any date & time
-- Changing an order's **price requires a reason** (recorded in the order's audit log)
+- Changing an order's **price requires a reason** — at accept time *or* when editing later (recorded in the order's audit log)
 - Admin can **reset/change the order-number sequence** (Settings → Order numbering)
 - Revenue reporting for any date range: revenue, collected vs outstanding, cash/card split, loads, items, average order value, daily breakdown — **export to CSV or PDF**
 - Full audit log on every order (who did what, when — including emails sent)
@@ -35,7 +35,7 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - **Access levels**: admin chooses exactly what each cashier can do
 - **Branded staff invitations**: email a new admin/cashier a welcome message with the app link, their role, and their PIN (Cashiers → Invite; the PIN is verified before it's included)
 - **Only admins can modify an already-accepted order** (enforced server-side)
-- Email alerts to **any number of recipients** when an order sits at "Accepted" too long (default 4h, admin-adjustable)
+- **Follow-up reminders** for laundry that sits at "Accepted" too long *or* is past its pickup time — an in-app ping + a red flag for reception, plus **push notifications and email** to any number of recipients. Reminders repeat on an admin-set interval and **pause during admin-set quiet hours** (default 6 PM–7 AM), then resume for anything still outstanding.
 - Settings: pick currency, upload logo, set property name, price per load, and max pieces per load
 
 **Pricing model:** flat price **per load**. Loads = ⌈items ÷ max-pieces-per-load⌉ (default max 25/load, admin-configurable). Reception can override the price on any order.

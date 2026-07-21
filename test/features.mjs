@@ -13,6 +13,7 @@ delete process.env.RESEND_API_KEY;
 
 const { handleRequest } = await import('../netlify/functions/api.js');
 const { sentLog, clearSentLog, inviteEmail } = await import('../netlify/functions/lib/email.js');
+const { effectiveBaseUrl, inQuietHours } = await import('../netlify/functions/lib/logic.js');
 
 let pass = 0, fail = 0; const out = [];
 const ok = (n, c, x = '') => { if (c) { pass++; out.push(`  ✅ ${n}`); } else { fail++; out.push(`  ❌ ${n} ${x}`); } };
@@ -159,6 +160,13 @@ try {
   ok('invite email includes the PIN', /4321/.test(inv.html));
   ok('invite email states admin full access + app link', /Administrator/.test(inv.html) && /full access/i.test(inv.html) && /https:\/\/x\.netlify\.app\/app/.test(inv.html));
   ok('invite email has no do-not-reply footer', !/do not reply/i.test(inv.html));
+  // The app button/link should appear even if the admin never set a Base URL.
+  process.env.URL = 'https://fallback.netlify.app';
+  ok('email URL falls back to the Netlify site URL', effectiveBaseUrl({ baseUrl: '' }) === 'https://fallback.netlify.app');
+  ok('an explicit Base URL wins (trailing slash trimmed)', effectiveBaseUrl({ baseUrl: 'https://custom.example/' }) === 'https://custom.example');
+  const invFb = inviteEmail({ name: 'Kofi', role: 'cashier', permissions: { acceptOrders: true }, pin: '2468' }, { hostelName: 'X', baseUrl: 'https://fallback.netlify.app' }, {});
+  ok('invite email shows the Open-app button + link', /Open the laundry app/.test(invFb.html) && /https:\/\/fallback\.netlify\.app\/app/.test(invFb.html));
+  delete process.env.URL;
 
   section('Multiple stuck-order alert recipients');
   r = await api('PUT', '/api/settings', { headers: H(adminT), body: { alertRecipients: 'a@x.com, b@x.com; c@x.com\nnot-an-email, a@x.com' } });
@@ -203,6 +211,19 @@ try {
   section('Shift activity summary');
   r = await api('GET', '/api/shifts/current', { headers: H(adminT) });
   ok('current shift includes an activity summary', r.body.open === true && !!r.body.activity && typeof r.body.activity.received.count === 'number' && typeof r.body.activity.payments.total === 'number', JSON.stringify(r.body.activity || {}));
+
+  section('Reason required when the cashier changes price at accept');
+  const pr = await api('POST', '/api/orders', { body: { guestName: 'Prc', guestEmail: 'prc@example.com', items: 5 } });
+  r = await api('POST', `/api/orders/${pr.body.id}/accept`, { headers: H(adminT), body: { room: 'Duafe', price: 30 } });
+  ok('changing accept price without a reason is blocked', r.status === 400, `got ${r.status}`);
+  r = await api('POST', `/api/orders/${pr.body.id}/accept`, { headers: H(adminT), body: { room: 'Duafe', price: 30, priceReason: 'bulky items' } });
+  ok('changing accept price with a reason is accepted', r.status === 200 && r.body.price === 30, JSON.stringify(r.body.error || r.body.price));
+  ok('accept price change is logged with the reason', r.body.logs.some((l) => /reason: bulky items/.test(l.detail)));
+
+  section('Quiet hours logic');
+  ok('2 AM is within 18:00–07:00 quiet window', inQuietHours(new Date(2020, 0, 1, 2, 0, 0), 18, 7) === true);
+  ok('noon is not quiet', inQuietHours(new Date(2020, 0, 1, 12, 0, 0), 18, 7) === false);
+  ok('equal from/to disables quiet entirely', inQuietHours(new Date(), 0, 0) === false);
 
   section('Admin: delete orders in a timeframe');
   const before = (await api('GET', '/api/orders', { headers: H(adminT) })).body.length;

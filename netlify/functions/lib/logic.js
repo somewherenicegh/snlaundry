@@ -21,6 +21,12 @@ const REVERSE = { completed: 'ready', ready: 'cleaning', cleaning: 'accepted' };
 // Which staff-attribution field records each stage transition.
 const STAGE_ACTOR_FIELD = { accepted: 'acceptedBy', cleaning: 'cleaningBy', ready: 'readyBy', completed: 'completedBy' };
 
+// The site URL to use in emails: the admin-set Base URL, else Netlify's own URL.
+export function effectiveBaseUrl(settings) {
+  const url = settings.baseUrl || process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.DEPLOY_URL || '';
+  return url.replace(/\/$/, '');
+}
+
 // Reception shift windows (local time). AM 06:00–13:59, PM 14:00–21:59, Night 22:00–05:59.
 export function shiftOf(date) {
   const h = new Date(date).getHours();
@@ -40,7 +46,10 @@ export function defaultSettings() {
     pricePerLoad: 10,
     piecesPerLoad: 25,
     turnaroundHours: 24,
-    stuckThresholdHours: 4,
+    followUpHours: 1, // accepted orders older than this need follow-up
+    followUpEveryHours: 1, // repeat the reminder this often
+    quietFrom: 18, // no reminders from 18:00 (6 PM) …
+    quietTo: 7, // … until 07:00 (7 AM) next day
     adminEmail: '',
     receptionEmail: '',
     alertRecipients: [], // extra emails alerted when an order is stuck
@@ -66,8 +75,11 @@ export async function updateSettings(patch) {
   // Never let piecesPerLoad drop below 1.
   next.piecesPerLoad = Math.max(1, Number(next.piecesPerLoad) || 25);
   next.pricePerLoad = Math.max(0, Number(next.pricePerLoad) || 0);
-  next.stuckThresholdHours = Math.max(0.25, Number(next.stuckThresholdHours) || 4);
   next.turnaroundHours = Math.max(1, Number(next.turnaroundHours) || 24);
+  next.followUpHours = Math.max(0.25, Number(next.followUpHours) || 1);
+  next.followUpEveryHours = Math.max(0.25, Number(next.followUpEveryHours) || 1);
+  next.quietFrom = clampHour(next.quietFrom, 18);
+  next.quietTo = clampHour(next.quietTo, 7);
   next.alertRecipients = normalizeEmails(next.alertRecipients);
   await writeJSON(K_SETTINGS, next);
   return next;
@@ -131,7 +143,7 @@ export async function inviteCashier(id, { email, pin }, actor) {
   const settings = await getSettings();
   const { subject, html } = inviteEmail(
     { name: c.name, role: c.role, permissions: c.role === 'admin' ? {} : c.permissions, pin: String(pin) },
-    settings,
+    { ...settings, baseUrl: effectiveBaseUrl(settings) },
     { inviterName: actor?.name },
   );
   const res = await sendEmail({ to: c.email, subject, html });
@@ -275,13 +287,23 @@ export async function acceptOrder(id, data, actor) {
     o.acceptedBy = actorRef(actor);
     o.room = data.room ? String(data.room).trim() : o.room;
     o.loads = computeLoads(o.items, settings.piecesPerLoad);
-    o.price = data.price != null && data.price !== ''
-      ? Math.max(0, Number(data.price))
-      : o.loads * settings.pricePerLoad;
+    const computed = o.loads * settings.pricePerLoad;
+    let priceNote = '';
+    if (data.price != null && data.price !== '') {
+      const p = Math.max(0, Number(data.price));
+      if (p !== computed) {
+        const reason = String(data.priceReason || '').trim();
+        if (!reason) throw httpError(400, 'Please give a reason for changing the price.');
+        priceNote = ` · price changed from ${settings.currency.symbol}${computed} to ${settings.currency.symbol}${p} (reason: ${reason})`;
+      }
+      o.price = p;
+    } else {
+      o.price = computed;
+    }
     // Default pickup = 6:00 PM the following day, unless reception picked one.
     o.pickupAt = data.pickupAt || nextDaySixPM();
     addLog(o, actor, 'accepted',
-      `Accepted · room ${o.room || '—'} · ${settings.currency.symbol}${o.price} · ready by ${o.pickupAt}`);
+      `Accepted · room ${o.room || '—'} · ${settings.currency.symbol}${o.price} · ready by ${o.pickupAt}${priceNote}`);
     // Reception may collect payment right at acceptance.
     if (data.paymentStatus === 'paid') {
       await applyPayment(o, data.paymentMethod, actor);
@@ -606,19 +628,38 @@ const SHIFT_LABEL = { AM: '06:00–14:00', PM: '14:00–22:00', Night: '22:00–
 function nameOf(ref) { return ref && ref.name ? ref.name : ''; }
 
 // ------------------------------------------------------- Stuck-order detection
-export async function findStuckOrders(settings) {
-  const s = settings || (await getSettings());
-  const orders = await getCollection(K_ORDERS);
-  const cutoff = Date.now() - s.stuckThresholdHours * 3600000;
-  return orders.filter(
-    (o) => o.status === 'accepted' && o.acceptedAt && new Date(o.acceptedAt).getTime() < cutoff && !o.stuckAlertedAt,
-  );
+// Quiet period (no reminders). Default 18:00–07:00 wraps midnight.
+export function inQuietHours(date, from, to) {
+  const h = new Date(date).getHours();
+  if (from === to) return false;
+  return from < to ? (h >= from && h < to) : (h >= from || h < to);
 }
 
-export async function markStuckAlerted(ids) {
+// Orders needing a follow-up nudge: accepted too long, or past their pickup time.
+// Respects quiet hours and the repeat interval. Returns [] during quiet hours.
+export async function findFollowUpOrders(settings, now = Date.now()) {
+  const s = settings || (await getSettings());
+  if (inQuietHours(now, s.quietFrom, s.quietTo)) return [];
+  const orders = await getCollection(K_ORDERS);
+  const followMs = (s.followUpHours || 1) * 3600000;
+  const everyMs = (s.followUpEveryHours || 1) * 3600000;
+  const due = [];
+  for (const o of orders) {
+    if (!['accepted', 'cleaning', 'ready'].includes(o.status)) continue;
+    const acceptedTooLong = o.status === 'accepted' && o.acceptedAt && (now - new Date(o.acceptedAt).getTime()) > followMs;
+    const pickupOverdue = o.pickupAt && new Date(o.pickupAt).getTime() < now;
+    if (!acceptedTooLong && !pickupOverdue) continue;
+    if (o.lastFollowUpAt && (now - new Date(o.lastFollowUpAt).getTime()) < everyMs) continue;
+    due.push({ ...publicOrder(o), _reason: acceptedTooLong ? 'accepted' : 'pickup' });
+  }
+  return due;
+}
+
+export async function markFollowedUp(ids, now = Date.now()) {
   const orders = await getCollection(K_ORDERS);
   const set = new Set(ids);
-  orders.forEach((o) => { if (set.has(o.id)) o.stuckAlertedAt = nowIso(); });
+  const iso = new Date(now).toISOString();
+  orders.forEach((o) => { if (set.has(o.id)) o.lastFollowUpAt = iso; });
   await saveCollection(K_ORDERS, orders);
 }
 
@@ -746,7 +787,7 @@ async function mutateOrder(id, fn) {
 
 async function notifyGuest(kind, order, settings) {
   try {
-    const { subject, html } = orderEmail(kind, order, settings);
+    const { subject, html } = orderEmail(kind, order, { ...settings, baseUrl: effectiveBaseUrl(settings) });
     const r = await sendEmail({ to: order.guestEmail, subject, html });
     order.logs.push({ id: newId('log'), at: nowIso(), actor: 'system', role: 'system', action: 'email', detail: `Sent "${kind}" email${r.dryRun ? ' (dry-run)' : ''}` });
   } catch (err) {
@@ -819,6 +860,11 @@ export function httpError(status, message) {
   return e;
 }
 function nowIso() { return new Date().toISOString(); }
+function clampHour(v, def) {
+  if (v === '' || v == null) return def;
+  const n = Math.floor(Number(v));
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : def;
+}
 function sum(arr) { return arr.reduce((a, b) => a + (Number(b) || 0), 0); }
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 function csv(v) { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }

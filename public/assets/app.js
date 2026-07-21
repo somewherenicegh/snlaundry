@@ -114,20 +114,36 @@ function currentShiftType() {
   return (h >= 6 && h < 14) ? 'AM' : (h >= 14 && h < 22) ? 'PM' : 'Night';
 }
 
-// Refresh the alert counters (new orders, orders stuck past the threshold, unread
-// messages) even when the user is not on the Orders/Messages tab — these drive the
-// repeating chimes.
+// ---- follow-up helpers ----
+function inQuietHoursNow() {
+  const s = state.settings || {};
+  const from = Number.isInteger(s.quietFrom) ? s.quietFrom : 18;
+  const to = Number.isInteger(s.quietTo) ? s.quietTo : 7;
+  if (from === to) return false;
+  const h = new Date().getHours();
+  return from < to ? (h >= from && h < to) : (h >= from || h < to);
+}
+function acceptedTooLong(o) {
+  const followMs = (state.settings?.followUpHours || 1) * 3600000;
+  return o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > followMs;
+}
+function pickupOverdue(o) {
+  return ['accepted', 'cleaning', 'ready'].includes(o.status) && o.pickupAt && new Date(o.pickupAt) < new Date();
+}
+function needsFollowUp(o) { return acceptedTooLong(o) || pickupOverdue(o); }
+
+// Refresh the alert counters (new orders, follow-ups, unread messages) even when the
+// user isn't on the Orders/Messages tab — these drive the repeating chimes.
 async function refreshAlerts() {
   try {
     const orders = await api('GET', '/orders');
     state.pendingNew = orders.filter(o => o.status === 'new').length;
-    const thr = (state.settings?.stuckThresholdHours || 4) * 3600000;
-    state.pendingStuck = orders.filter(o => o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > thr).length;
+    state.pendingFollowUp = inQuietHoursNow() ? 0 : orders.filter(needsFollowUp).length;
     state.pendingMsg = can('messageGuests')
       ? orders.reduce((n, o) => n + (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length, 0)
       : 0;
-    if (state.pendingStuck > (state._lastStuck || 0)) notifyBg('Order waiting too long', `${state.pendingStuck} accepted order(s) haven't moved in over ${state.settings?.stuckThresholdHours || 4}h`, 'stuck');
-    state._lastStuck = state.pendingStuck;
+    if (state.pendingFollowUp > (state._lastFollowUp || 0)) notifyBg('Laundry needs follow-up', `${state.pendingFollowUp} order(s) need attention at the laundry`, 'follow-up');
+    state._lastFollowUp = state.pendingFollowUp;
   } catch { /* keep last values */ }
 }
 
@@ -361,7 +377,7 @@ async function enterApp() {
   ensureTopbarControls();
   resetIdle();
   state.knownOrderIds = null;
-  state.pendingMsg = 0; state.pendingStuck = 0; state._lastStuck = 0;
+  state.pendingMsg = 0; state.pendingFollowUp = 0; state._lastFollowUp = 0;
   await refreshShift(); // load shift status before first render so the shift bar shows
   await refreshAlerts();
   buildTabs();
@@ -380,7 +396,7 @@ async function enterApp() {
   state.pingTimer = setInterval(() => {
     state.pingTick += 1;
     if (state.pendingNew > 0) ping();
-    else if (state.pendingStuck > 0) ping();
+    else if (state.pendingFollowUp > 0) ping();
     else if (state.pendingMsg > 0) msgPing();
     else if (!(state.shift && state.shift.open) && state.pingTick % 2 === 0) shiftPing();
     checkShiftBoundary();
@@ -564,8 +580,7 @@ async function renderOrders(view, silent) {
     if (fresh.length) { ping(); notifyBg('New laundry order', `${fresh.length} new order(s) awaiting acceptance`, 'new-order'); }
   }
   state.knownOrderIds = newIds;
-  const _thr = (state.settings?.stuckThresholdHours || 4) * 3600000;
-  state.pendingStuck = orders.filter(o => o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > _thr).length;
+  state.pendingFollowUp = inQuietHoursNow() ? 0 : orders.filter(needsFollowUp).length;
   if (can('messageGuests')) {
     state.pendingMsg = orders.reduce((n, o) => n + (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length, 0);
   }
@@ -583,7 +598,7 @@ async function renderOrders(view, silent) {
   view.innerHTML = `
     ${shiftBarHtml()}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h2 style="margin:0">Orders ${newCount ? `<span class="pill">${newCount} new</span>` : ''}${state.pendingStuck ? ` <span class="pill" style="background:#fbe4e0;color:#992d20">${state.pendingStuck} waiting &gt;${state.settings?.stuckThresholdHours || 4}h</span>` : ''}</h2>
+      <h2 style="margin:0">Orders ${newCount ? `<span class="pill">${newCount} new</span>` : ''}${state.pendingFollowUp ? ` <span class="pill" style="background:#fbe4e0;color:#992d20">${state.pendingFollowUp} need follow-up</span>` : ''}</h2>
       <button class="small secondary" onclick="location.reload()">↻ Refresh</button>
     </div>
     <div class="cols">${boards}</div>
@@ -594,7 +609,8 @@ async function renderOrders(view, silent) {
 }
 
 function orderCard(o) {
-  const stuck = o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > (state.settings?.stuckThresholdHours || 4) * 3600000;
+  const flagAccepted = acceptedTooLong(o);
+  const flagPickup = pickupOverdue(o);
   const nextBtn = { accepted: 'Start cleaning', cleaning: 'Mark ready', ready: 'Mark picked up' }[o.status];
   const unread = (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length;
   const unpaid = o.paymentStatus !== 'paid';
@@ -604,7 +620,8 @@ function orderCard(o) {
     <div>${esc(o.guestName)} ${o.room ? `· Room ${esc(o.room)}` : ''} ${unread ? `<span class="tab-badge">${unread}✉</span>` : ''}</div>
     <div class="meta">${o.items} items · ${o.loads} load(s) · ${money(o.price)} · ${o.status === 'new' ? paymentPref(o) : (unpaid ? '⚠ unpaid' : 'paid')}</div>
     <div class="meta">${o.status === 'new' ? 'Placed ' + ago(o.createdAt) : 'Ready by ' + fmt(o.pickupAt)}</div>
-    ${stuck ? '<div class="meta" style="color:var(--danger);font-weight:600">⏰ waiting ' + ago(o.acceptedAt) + '</div>' : ''}
+    ${flagAccepted ? '<div class="meta" style="color:var(--danger);font-weight:600">⏰ waiting ' + ago(o.acceptedAt) + ' — follow up at laundry</div>' : ''}
+    ${flagPickup ? '<div class="meta" style="color:var(--danger);font-weight:600">⏰ pickup time passed — follow up</div>' : ''}
     <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
       ${o.status === 'new' && can('acceptOrders') ? `<button class="small" onclick="openAccept('${o.id}')">Accept</button>` : ''}
       ${o.status !== 'new' && unpaid && can('takePayment') ? `<button class="small secondary" onclick="takePayment('${o.id}')">Take payment</button>` : ''}
@@ -680,6 +697,8 @@ window.openAccept = async (id) => {
     <label>Price (${cur()})</label>
     <input id="acPrice" type="number" step="0.01" min="0" value="${est.toFixed(2)}">
     <p class="muted" style="font-size:12px;margin:6px 0 0">${o.loads} load(s) × ${money(state.settings?.pricePerLoad)} = ${money(est)} (editable).</p>
+    <label>Reason for price change <span class="muted">(required only if you change the amount)</span></label>
+    <input id="acPriceReason" placeholder="e.g. express service / extra items">
     <label>Payment <span class="muted">— guest chose ${paymentPref(o)}</span></label>
     <select id="acPayStatus" onchange="document.getElementById('acMethodRow').style.display=this.value==='paid'?'block':'none'">
       <option value="unpaid" ${o.paymentTiming !== 'now' ? 'selected' : ''}>Not paid yet</option>
@@ -697,6 +716,7 @@ window.doAccept = async (id) => {
     const pickup = $('#acPickup').value ? new Date($('#acPickup').value).toISOString() : null;
     await api('POST', `/orders/${id}/accept`, {
       room: $('#acRoom').value.trim(), pickupAt: pickup, price: $('#acPrice').value,
+      priceReason: $('#acPriceReason').value.trim(),
       paymentStatus: $('#acPayStatus').value, paymentMethod: $('#acMethod') ? $('#acMethod').value : 'cash',
     });
     closeModal(); renderTab();
@@ -874,6 +894,14 @@ async function loadShiftHistory(from, to) {
     <tbody>${shifts.map(s => { const a = s.activity || {}; return `<tr><td>${fmt(s.openedAt)}</td><td>${esc(s.cashierName)}</td><td>${s.type}</td><td>${s.closedAt ? fmt(s.closedAt) : '—'}</td><td>${a.received ? a.received.count : '—'}</td><td>${a.payments ? money(a.payments.total) : '—'}</td><td>${a.pickedUp ? a.pickedUp.count : '—'}</td><td>${s.closingInProgress != null ? s.closingInProgress : '—'}</td><td>${s.acknowledged ? '✓' : '—'}</td><td>${s.status === 'open' ? '<span class="pill">open</span>' : 'closed'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
 }
 const SHIFT_TIME = { AM: '06:00–14:00', PM: '14:00–22:00', Night: '22:00–06:00' };
+function hourOptions(sel) {
+  let out = '';
+  for (let h = 0; h < 24; h++) {
+    const label = h === 0 ? '12 AM (midnight)' : h < 12 ? `${h} AM` : h === 12 ? '12 PM (noon)' : `${h - 12} PM`;
+    out += `<option value="${h}" ${Number(sel) === h ? 'selected' : ''}>${label}</option>`;
+  }
+  return out;
+}
 function nm(ref) { return ref && ref.name ? ref.name : '—'; }
 window.exportCsv = async () => {
   const res = await fetch('/api/report/csv?' + reportQs(), { headers: { authorization: `Bearer ${state.token}` } });
@@ -1028,10 +1056,20 @@ async function renderSettings(view) {
       <label>Standard turnaround (hours)</label><input id="stTurn" type="number" min="1" value="${s.turnaroundHours}">
     </div>
     <div class="card">
-      <h3 style="margin-top:0">Alerts</h3>
-      <label>Alert when an order stays "Accepted" longer than (hours)</label>
-      <input id="stStuck" type="number" min="0.25" step="0.25" value="${s.stuckThresholdHours}">
+      <h3 style="margin-top:0">Follow-up reminders</h3>
+      <p class="hint">Remind reception to follow up on accepted laundry that hasn't moved, and on orders past their pickup time. Reminders repeat until the order moves on, and pause during quiet hours.</p>
       <div class="row">
+        <div><label>Follow up after order accepted (hours)</label><input id="stFollowUp" type="number" min="0.25" step="0.25" value="${s.followUpHours}"></div>
+        <div><label>Repeat reminder every (hours)</label><input id="stFollowEvery" type="number" min="0.25" step="0.25" value="${s.followUpEveryHours}"></div>
+      </div>
+      <div class="row">
+        <div><label>Quiet hours from</label>
+          <select id="stQuietFrom">${hourOptions(s.quietFrom)}</select></div>
+        <div><label>Quiet hours until</label>
+          <select id="stQuietTo">${hourOptions(s.quietTo)}</select></div>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">No reminders are sent during quiet hours; they resume afterwards for anything still outstanding.</p>
+      <div class="row" style="margin-top:8px">
         <div><label>Admin alert email</label><input id="stAdminEmail" type="email" value="${esc(s.adminEmail || '')}"></div>
         <div><label>Reception alert email</label><input id="stRecEmail" type="email" value="${esc(s.receptionEmail || '')}"></div>
       </div>
@@ -1113,7 +1151,9 @@ window.saveSettings = async () => {
   const body = {
     hostelName: $('#stName').value.trim(), accentColor: $('#stColor').value, hoverColor: $('#stHover').value,
     currency: { code, symbol }, pricePerLoad: $('#stPrice').value, piecesPerLoad: $('#stPieces').value,
-    turnaroundHours: $('#stTurn').value, stuckThresholdHours: $('#stStuck').value,
+    turnaroundHours: $('#stTurn').value,
+    followUpHours: $('#stFollowUp').value, followUpEveryHours: $('#stFollowEvery').value,
+    quietFrom: $('#stQuietFrom').value, quietTo: $('#stQuietTo').value,
     adminEmail: $('#stAdminEmail').value.trim(), receptionEmail: $('#stRecEmail').value.trim(),
     alertRecipients: $('#stAlertRecipients').value,
     baseUrl: $('#stBase').value.trim(),

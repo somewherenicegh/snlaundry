@@ -212,24 +212,26 @@ export function inviteEmail(cashier, settings, opts = {}) {
   };
 }
 
-export function stuckAlertEmail(orders, settings, thresholdHours) {
+export function followUpEmail(orders, settings) {
   const rows = orders
-    .map(
-      (o) => `<tr>
+    .map((o) => {
+      const why = o._reason === 'pickup' ? 'Pickup time passed' : `Accepted ${hoursSince(o.acceptedAt)}h ago`;
+      return `<tr>
         <td style="padding:6px 8px;border-bottom:1px solid #eee">#${o.number}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #eee">${escapeHtml(o.guestName)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #eee">${o.room ? escapeHtml(o.room) : '—'}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee">${hoursSince(o.acceptedAt)}h</td>
-      </tr>`,
-    )
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;text-transform:capitalize">${escapeHtml(o.status)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee">${why}</td>
+      </tr>`;
+    })
     .join('');
-  const body = `<p><strong>${orders.length} order(s)</strong> have been sitting at <b>Accepted</b> for more than ${thresholdHours}h and haven't moved to cleaning:</p>
+  const body = `<p><strong>${orders.length} laundry order(s)</strong> need a follow-up at the laundry:</p>
     <table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:10px">
-      <tr style="text-align:left;color:#6b7280"><th style="padding:6px 8px">Order</th><th style="padding:6px 8px">Guest</th><th style="padding:6px 8px">Room</th><th style="padding:6px 8px">Waiting</th></tr>
+      <tr style="text-align:left;color:#6b7280"><th style="padding:6px 8px">Order</th><th style="padding:6px 8px">Guest</th><th style="padding:6px 8px">Room</th><th style="padding:6px 8px">Status</th><th style="padding:6px 8px">Why</th></tr>
       ${rows}
     </table>
-    <p style="margin-top:14px">Please progress these orders in the reception app.</p>`;
-  return { subject: `⏰ ${orders.length} laundry order(s) need attention`, html: shell(settings, body) };
+    <p style="margin-top:14px">Please follow up at the laundry and progress these orders.</p>`;
+  return { subject: `⏰ ${orders.length} laundry order(s) need follow-up`, html: shell(settings, body) };
 }
 
 // ---- helpers ----

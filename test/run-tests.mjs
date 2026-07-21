@@ -171,28 +171,34 @@ try {
   r = await api('GET', '/api/report', { headers: authH(benToken) });
   ok('cashier without viewReports blocked from report', r.status === 403);
 
-  // ---- stuck-order detection ----
-  section('Stuck-order alert (accepted > threshold)');
+  // ---- follow-up reminders ----
+  section('Follow-up reminders (accepted too long / pickup overdue)');
   let r3 = await api('POST', '/api/orders', { body: { guestName: 'Old Order', guestEmail: 'old@example.com', items: 4 } });
   await api('POST', `/api/orders/${r3.body.id}/accept`, { headers: authH(adminToken), body: { room: '303' } });
-  // backdate acceptedAt beyond threshold
+  // backdate acceptedAt beyond the follow-up window
   const orders = await store.getCollection('orders');
   const target = orders.find((o) => o.id === r3.body.id);
   target.acceptedAt = new Date(Date.now() - 5 * 3600000).toISOString();
   await store.saveCollection('orders', orders);
-  // add extra alert recipients (one duplicates the admin email → should de-dupe)
-  await api('PUT', '/api/settings', { headers: authH(adminToken), body: { alertRecipients: 'ops1@bluewave.test, ops2@bluewave.test, admin@bluewave.test' } });
+  // disable quiet hours (quietFrom === quietTo) so the test is time-independent
+  await api('PUT', '/api/settings', { headers: authH(adminToken), body: { alertRecipients: 'ops1@bluewave.test, ops2@bluewave.test, admin@bluewave.test', quietFrom: 0, quietTo: 0, followUpHours: 1, followUpEveryHours: 1 } });
   clearSentLog();
   const stuckRes = await runStuckCheck();
-  ok('stuck check finds the 5h-old order', stuckRes.alerted === 1, JSON.stringify(stuckRes));
-  ok('alert emailed all unique recipients (admin+reception+2 extra)', sentLog().filter((e) => /need attention/i.test(e.subject)).length === 4, JSON.stringify(sentLog().map((e) => e.to)));
+  ok('follow-up finds the 5h-old accepted order', stuckRes.alerted === 1, JSON.stringify(stuckRes));
+  ok('emailed all unique recipients (admin+reception+2 extra)', sentLog().filter((e) => /follow-up/i.test(e.subject)).length === 4, JSON.stringify(sentLog().map((e) => e.to)));
   const stuckRes2 = await runStuckCheck();
-  ok('does not re-alert same order', stuckRes2.alerted === 0);
+  ok('does not re-alert within the repeat window', stuckRes2.alerted === 0);
 
-  // admin can lower threshold
-  await api('PUT', '/api/settings', { headers: authH(adminToken), body: { stuckThresholdHours: 1 } });
+  // quiet hours suppress reminders entirely
+  await api('PUT', '/api/settings', { headers: authH(adminToken), body: { quietFrom: 0, quietTo: 23 } }); // almost all day is quiet
+  const nowH = new Date().getHours();
+  if (nowH < 23) { const qr = await runStuckCheck(); ok('quiet hours suppress reminders', qr.alerted === 0, JSON.stringify(qr)); }
+  else { ok('quiet hours suppress reminders (skipped near 23:00)', true); }
+
+  // admin can change the follow-up window
+  await api('PUT', '/api/settings', { headers: authH(adminToken), body: { quietFrom: 0, quietTo: 0, followUpHours: 2 } });
   r = await api('GET', '/api/settings', { headers: authH(adminToken) });
-  ok('admin can customise stuck threshold', r.body.stuckThresholdHours === 1);
+  ok('admin can customise the follow-up window', r.body.followUpHours === 2);
 
   // ---- guard: unauthenticated ----
   section('Auth guards');
