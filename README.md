@@ -32,10 +32,11 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - Revenue reporting for any date range: revenue, collected vs outstanding, cash/card split, loads, items, average order value, daily breakdown — **export to CSV or PDF**
 - Full audit log on every order (who did what, when — including emails sent)
 - Guest message inbox with unread badges
+- **Roles**: Admin, Cashier (reception), and **Laundry person** — laundry staff only move orders cleaning → ready (they can't accept, take payment, or mark picked up). They get the accepted-order and pre-pickup reminders so they know what to wash and when to check the lines.
 - **Access levels**: admin chooses exactly what each cashier can do
 - **Branded staff invitations**: email a new admin/cashier a welcome message with the app link, their role, and their PIN (Cashiers → Invite; the PIN is verified before it's included)
 - **Only admins can modify an already-accepted order** (enforced server-side)
-- **Follow-up reminders** for laundry that sits at "Accepted" too long *or* is past its pickup time — an in-app ping + a red flag for reception, plus **push notifications and email** to any number of recipients. Reminders repeat on an admin-set interval and **pause during admin-set quiet hours** (default 6 PM–7 AM), then resume for anything still outstanding.
+- **Follow-up reminders** for laundry that sits at "Accepted" too long *or* is **approaching** its pickup time (an admin-set number of hours before pickup — no sound is played *after* pickup time). In-app chime (every 30 min) + red flag, plus **push and email** to any number of recipients. Reminders **pause during admin-set quiet hours** (default 6 PM–7 AM) and resume afterwards. A receptionist can **report a delay** on an accepted/cleaning order, which mutes the reminder for 30 minutes, then it resumes until the order moves or another reason is given.
 - Settings: pick currency, upload logo, set property name, price per load, and max pieces per load
 
 **Pricing model:** flat price **per load**. Loads = ⌈items ÷ max-pieces-per-load⌉ (default max 25/load, admin-configurable). Reception can override the price on any order.

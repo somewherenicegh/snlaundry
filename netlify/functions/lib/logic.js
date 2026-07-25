@@ -3,8 +3,14 @@
 
 import { readJSON, writeJSON, getCollection, saveCollection } from './store.js';
 import {
-  hashPin, verifyPin, signToken, defaultCashierPermissions, newId,
+  hashPin, verifyPin, signToken, defaultCashierPermissions, defaultLaundryPermissions, newId,
 } from './auth.js';
+
+const ROLES = ['admin', 'cashier', 'laundry'];
+function normalizeRole(r) { return ROLES.includes(r) ? r : 'cashier'; }
+function defaultPermsFor(role) {
+  return role === 'admin' ? {} : role === 'laundry' ? defaultLaundryPermissions() : defaultCashierPermissions();
+}
 import { sendEmail, orderEmail, inviteEmail } from './email.js';
 import { sendPushToAll } from './push.js';
 
@@ -47,7 +53,8 @@ export function defaultSettings() {
     piecesPerLoad: 25,
     turnaroundHours: 24,
     followUpHours: 1, // accepted orders older than this need follow-up
-    followUpEveryHours: 1, // repeat the reminder this often
+    followUpEveryHours: 1, // repeat the email/push reminder this often
+    pickupLeadHours: 3, // start "prepare for pickup" reminders this many hours before pickup
     quietFrom: 18, // no reminders from 18:00 (6 PM) …
     quietTo: 7, // … until 07:00 (7 AM) next day
     adminEmail: '',
@@ -78,6 +85,7 @@ export async function updateSettings(patch) {
   next.turnaroundHours = Math.max(1, Number(next.turnaroundHours) || 24);
   next.followUpHours = Math.max(0.25, Number(next.followUpHours) || 1);
   next.followUpEveryHours = Math.max(0.25, Number(next.followUpEveryHours) || 1);
+  next.pickupLeadHours = Math.max(0, Number(next.pickupLeadHours) || 3);
   next.quietFrom = clampHour(next.quietFrom, 18);
   next.quietTo = clampHour(next.quietTo, 7);
   next.alertRecipients = normalizeEmails(next.alertRecipients);
@@ -115,12 +123,13 @@ export async function createCashier({ name, pin, role = 'cashier', permissions, 
   const cashiers = await getCollection(K_CASHIERS);
   if (await pinInUse(pin, cashiers)) throw httpError(409, 'That PIN is already in use — choose another.');
   const { salt, hash } = hashPin(pin);
+  const r = normalizeRole(role);
   const c = {
-    id: newId('csh'), name: name || 'Cashier',
-    role: role === 'admin' ? 'admin' : 'cashier',
+    id: newId('csh'), name: name || 'Staff',
+    role: r,
     salt, hash,
     email: validEmail(email) ? String(email).trim().toLowerCase() : '',
-    permissions: role === 'admin' ? {} : { ...defaultCashierPermissions(), ...(permissions || {}) },
+    permissions: r === 'admin' ? {} : { ...defaultPermsFor(r), ...(permissions || {}) },
     active: true, createdAt: nowIso(),
   };
   cashiers.push(c);
@@ -156,7 +165,10 @@ export async function updateCashier(id, patch, actor) {
   if (!c) throw httpError(404, 'Cashier not found');
   if (patch.name != null) c.name = patch.name;
   if (patch.email != null) c.email = validEmail(patch.email) ? String(patch.email).trim().toLowerCase() : '';
-  if (patch.role != null) c.role = patch.role === 'admin' ? 'admin' : 'cashier';
+  if (patch.role != null) {
+    const nr = normalizeRole(patch.role);
+    if (nr !== c.role) { c.role = nr; c.permissions = nr === 'admin' ? {} : { ...defaultPermsFor(nr) }; }
+  }
   if (patch.active != null) c.active = !!patch.active;
   if (patch.permissions && c.role !== 'admin') c.permissions = { ...c.permissions, ...patch.permissions };
   if (patch.pin) {
@@ -242,6 +254,9 @@ export async function createOrder({ guestName, guestEmail, items, note, paymentT
     cleaningBy: null,
     readyBy: null,
     completedBy: null,
+    delayReason: '',
+    delayReasonAt: null,
+    lastFollowUpAt: null,
     note: note ? String(note).slice(0, 500) : '',
     messages: [],
     logs: [],
@@ -321,11 +336,16 @@ export async function advanceStatus(id, target, actor) {
     const expected = FLOW[o.status];
     if (!expected) throw httpError(409, `Cannot advance from ${o.status}`);
     if (target && target !== expected) throw httpError(400, `Next stage must be ${expected}`);
+    // Laundry staff only run cleaning → ready; they can't mark an order picked up.
+    if (expected === 'completed' && actor?.role === 'laundry') {
+      throw httpError(403, 'Laundry staff cannot mark orders as picked up — reception handles that.');
+    }
     // An order cannot be picked up (completed) before it has been paid.
     if (expected === 'completed' && o.paymentStatus !== 'paid') {
       throw httpError(409, 'Payment must be collected before the order can be marked picked up.');
     }
     o.status = expected;
+    o.delayReasonAt = null; // moving on clears any delay snooze
     if (STAGE_ACTOR_FIELD[expected]) o[STAGE_ACTOR_FIELD[expected]] = actorRef(actor);
     if (expected === 'completed') o.completedAt = nowIso();
     addLog(o, actor, 'status', `Status → ${expected}`);
@@ -635,24 +655,52 @@ export function inQuietHours(date, from, to) {
   return from < to ? (h >= from && h < to) : (h >= from || h < to);
 }
 
-// Orders needing a follow-up nudge: accepted too long, or past their pickup time.
-// Respects quiet hours and the repeat interval. Returns [] during quiet hours.
+export const DELAY_SNOOZE_MS = 30 * 60000; // a delay reason silences reminders for 30 min
+
+// True while an order is snoozed by a recent delay reason.
+export function isSnoozed(o, now = Date.now()) {
+  return !!(o.delayReasonAt && (now - new Date(o.delayReasonAt).getTime()) < DELAY_SNOOZE_MS);
+}
+// True when pickup is within the lead window (approaching) but not yet past.
+export function pickupApproaching(o, leadMs, now = Date.now()) {
+  if (!o.pickupAt) return false;
+  const dt = new Date(o.pickupAt).getTime() - now;
+  return dt > 0 && dt <= leadMs;
+}
+
+// Orders needing a follow-up nudge (for email/push): accepted too long, or within
+// the pickup lead window. NOT orders past pickup (no sound after pickup). Respects
+// quiet hours, the delay-reason snooze, and the repeat interval.
 export async function findFollowUpOrders(settings, now = Date.now()) {
   const s = settings || (await getSettings());
   if (inQuietHours(now, s.quietFrom, s.quietTo)) return [];
   const orders = await getCollection(K_ORDERS);
   const followMs = (s.followUpHours || 1) * 3600000;
   const everyMs = (s.followUpEveryHours || 1) * 3600000;
+  const leadMs = (s.pickupLeadHours ?? 3) * 3600000;
   const due = [];
   for (const o of orders) {
     if (!['accepted', 'cleaning', 'ready'].includes(o.status)) continue;
+    if (isSnoozed(o, now)) continue;
     const acceptedTooLong = o.status === 'accepted' && o.acceptedAt && (now - new Date(o.acceptedAt).getTime()) > followMs;
-    const pickupOverdue = o.pickupAt && new Date(o.pickupAt).getTime() < now;
-    if (!acceptedTooLong && !pickupOverdue) continue;
+    const soon = pickupApproaching(o, leadMs, now);
+    if (!acceptedTooLong && !soon) continue;
     if (o.lastFollowUpAt && (now - new Date(o.lastFollowUpAt).getTime()) < everyMs) continue;
-    due.push({ ...publicOrder(o), _reason: acceptedTooLong ? 'accepted' : 'pickup' });
+    due.push({ ...publicOrder(o), _reason: acceptedTooLong ? 'accepted' : 'pickupSoon' });
   }
   return due;
+}
+
+export async function setDelayReason(id, reason, actor) {
+  const clean = String(reason || '').trim();
+  if (!clean) throw httpError(400, 'Please give a reason for the delay.');
+  return mutateOrder(id, async (o) => {
+    if (!['accepted', 'cleaning', 'ready'].includes(o.status)) throw httpError(409, 'Only in-progress orders can be snoozed.');
+    o.delayReason = clean.slice(0, 300);
+    o.delayReasonAt = nowIso();
+    addLog(o, actor, 'delay', `Delay reason (${o.status}): ${o.delayReason}`);
+    return o;
+  });
 }
 
 export async function markFollowedUp(ids, now = Date.now()) {

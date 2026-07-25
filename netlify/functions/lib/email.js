@@ -215,7 +215,7 @@ export function inviteEmail(cashier, settings, opts = {}) {
 export function followUpEmail(orders, settings) {
   const rows = orders
     .map((o) => {
-      const why = o._reason === 'pickup' ? 'Pickup time passed' : `Accepted ${hoursSince(o.acceptedAt)}h ago`;
+      const why = o._reason === 'pickupSoon' ? 'Pickup approaching' : `Accepted ${hoursSince(o.acceptedAt)}h ago`;
       return `<tr>
         <td style="padding:6px 8px;border-bottom:1px solid #eee">#${o.number}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #eee">${escapeHtml(o.guestName)}</td>

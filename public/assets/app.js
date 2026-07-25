@@ -109,6 +109,23 @@ function msgPing() {
     });
   } catch {}
 }
+// A distinct "go follow up on laundry" chime (three bright beeps).
+function followUpPing() {
+  if (state.muted || !_audioCtx) return;
+  try {
+    const t = _audioCtx.currentTime;
+    [0, 0.14, 0.28].forEach((off) => {
+      const osc = _audioCtx.createOscillator();
+      const gain = _audioCtx.createGain();
+      osc.type = 'sine'; osc.frequency.value = 988; // B5
+      gain.gain.setValueAtTime(0.0001, t + off);
+      gain.gain.exponentialRampToValueAtTime(0.26, t + off + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + off + 0.11);
+      osc.connect(gain); gain.connect(_audioCtx.destination);
+      osc.start(t + off); osc.stop(t + off + 0.12);
+    });
+  } catch {}
+}
 function currentShiftType() {
   const h = new Date().getHours();
   return (h >= 6 && h < 14) ? 'AM' : (h >= 14 && h < 22) ? 'PM' : 'Night';
@@ -127,10 +144,30 @@ function acceptedTooLong(o) {
   const followMs = (state.settings?.followUpHours || 1) * 3600000;
   return o.status === 'accepted' && o.acceptedAt && (Date.now() - new Date(o.acceptedAt)) > followMs;
 }
-function pickupOverdue(o) {
+function pickupApproaching(o) {
+  const lead = (state.settings?.pickupLeadHours ?? 3) * 3600000;
+  if (!o.pickupAt) return false;
+  const dt = new Date(o.pickupAt) - new Date();
+  return dt > 0 && dt <= lead;
+}
+function pickupPast(o) {
   return ['accepted', 'cleaning', 'ready'].includes(o.status) && o.pickupAt && new Date(o.pickupAt) < new Date();
 }
-function needsFollowUp(o) { return acceptedTooLong(o) || pickupOverdue(o); }
+function isSnoozedO(o) {
+  return o.delayReasonAt && (Date.now() - new Date(o.delayReasonAt)) < 30 * 60000;
+}
+// Does this order need an audible follow-up for the CURRENT user's role?
+// (Never after pickup time — only accepted-too-long or approaching pickup.)
+function needsFollowUp(o) {
+  if (!['accepted', 'cleaning', 'ready'].includes(o.status)) return false;
+  if (isSnoozedO(o)) return false;
+  if (state.user?.role === 'laundry') {
+    // laundry: any accepted order (start cleaning) or approaching pickup (check lines)
+    return o.status === 'accepted' || pickupApproaching(o);
+  }
+  // reception (admin / cashier): accepted too long, or approaching pickup
+  return acceptedTooLong(o) || pickupApproaching(o);
+}
 
 // Refresh the alert counters (new orders, follow-ups, unread messages) even when the
 // user isn't on the Orders/Messages tab — these drive the repeating chimes.
@@ -377,7 +414,7 @@ async function enterApp() {
   ensureTopbarControls();
   resetIdle();
   state.knownOrderIds = null;
-  state.pendingMsg = 0; state.pendingFollowUp = 0; state._lastFollowUp = 0;
+  state.pendingMsg = 0; state.pendingFollowUp = 0; state._lastFollowUp = 0; state._lastFollowUpPing = 0;
   await refreshShift(); // load shift status before first render so the shift bar shows
   await refreshAlerts();
   buildTabs();
@@ -395,10 +432,20 @@ async function enterApp() {
   state.pingTick = 0;
   state.pingTimer = setInterval(() => {
     state.pingTick += 1;
+    const now = Date.now();
+    // New orders and messages chime continuously; the shift-due chime as before.
     if (state.pendingNew > 0) ping();
-    else if (state.pendingFollowUp > 0) ping();
     else if (state.pendingMsg > 0) msgPing();
     else if (!(state.shift && state.shift.open) && state.pingTick % 2 === 0) shiftPing();
+    // Follow-up reminders play on a 30-minute cadence (and immediately on first detection).
+    if (state.pendingFollowUp > 0) {
+      if (!state._lastFollowUpPing || now - state._lastFollowUpPing >= 30 * 60000) {
+        followUpPing();
+        state._lastFollowUpPing = now;
+      }
+    } else {
+      state._lastFollowUpPing = 0;
+    }
     checkShiftBoundary();
   }, 6000);
 }
@@ -609,9 +656,12 @@ async function renderOrders(view, silent) {
 }
 
 function orderCard(o) {
-  const flagAccepted = acceptedTooLong(o);
-  const flagPickup = pickupOverdue(o);
+  const snoozed = isSnoozedO(o);
+  const flagAccepted = !snoozed && acceptedTooLong(o);
+  const flagSoon = !snoozed && pickupApproaching(o);
+  const flagPast = pickupPast(o);
   const nextBtn = { accepted: 'Start cleaning', cleaning: 'Mark ready', ready: 'Mark picked up' }[o.status];
+  const laundryBlocked = o.status === 'ready' && state.user?.role === 'laundry'; // laundry can't complete
   const unread = (o.messages || []).filter(m => m.sender === 'guest' && !m.readByStaff).length;
   const unpaid = o.paymentStatus !== 'paid';
   const blockPickup = o.status === 'ready' && unpaid; // can't complete until paid
@@ -620,12 +670,14 @@ function orderCard(o) {
     <div>${esc(o.guestName)} ${o.room ? `· Room ${esc(o.room)}` : ''} ${unread ? `<span class="tab-badge">${unread}✉</span>` : ''}</div>
     <div class="meta">${o.items} items · ${o.loads} load(s) · ${money(o.price)} · ${o.status === 'new' ? paymentPref(o) : (unpaid ? '⚠ unpaid' : 'paid')}</div>
     <div class="meta">${o.status === 'new' ? 'Placed ' + ago(o.createdAt) : 'Ready by ' + fmt(o.pickupAt)}</div>
+    ${snoozed ? '<div class="meta" style="color:var(--muted)">🔕 snoozed · ' + esc(o.delayReason || 'delay noted') + '</div>' : ''}
     ${flagAccepted ? '<div class="meta" style="color:var(--danger);font-weight:600">⏰ waiting ' + ago(o.acceptedAt) + ' — follow up at laundry</div>' : ''}
-    ${flagPickup ? '<div class="meta" style="color:var(--danger);font-weight:600">⏰ pickup time passed — follow up</div>' : ''}
+    ${flagSoon ? '<div class="meta" style="color:var(--warn);font-weight:600">⏰ pickup soon — ' + (state.user?.role === 'laundry' ? 'check the lines' : 'prepare for pickup') + '</div>' : ''}
+    ${flagPast && !flagSoon ? '<div class="meta" style="color:var(--muted)">pickup time passed</div>' : ''}
     <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
       ${o.status === 'new' && can('acceptOrders') ? `<button class="small" onclick="openAccept('${o.id}')">Accept</button>` : ''}
       ${o.status !== 'new' && unpaid && can('takePayment') ? `<button class="small secondary" onclick="takePayment('${o.id}')">Take payment</button>` : ''}
-      ${nextBtn && can('advanceStatus') ? `<button class="small" ${blockPickup ? 'disabled title="Collect payment first"' : ''} onclick="advance('${o.id}')">${nextBtn}</button>` : ''}
+      ${nextBtn && can('advanceStatus') && !laundryBlocked ? `<button class="small" ${blockPickup ? 'disabled title="Collect payment first"' : ''} onclick="advance('${o.id}')">${nextBtn}</button>` : ''}
     </div>
   </div>`;
 }
@@ -657,15 +709,17 @@ window.openOrder = async (id) => {
       <tr><td class="muted">Payment</td><td>${o.paymentStatus === 'paid' ? 'Paid ✓ (' + (o.paymentMethod || '') + ')' + (o.paidBy ? ' · by ' + esc(o.paidBy.name) : '') : '⚠ Unpaid · guest chose ' + paymentPref(o)}</td></tr>
       <tr><td class="muted">Ready by</td><td>${fmt(o.pickupAt)}</td></tr>
       ${o.note ? `<tr><td class="muted">Note</td><td>${esc(o.note)}</td></tr>` : ''}
+      ${o.delayReason ? `<tr><td class="muted">Delay reason</td><td>${esc(o.delayReason)}${isSnoozedO(o) ? ' <span class="pill">reminder muted</span>' : ''}</td></tr>` : ''}
       ${attributionRows(o)}
     </table>
     <div id="modalMsg"></div>
     <div class="stack" style="margin-top:12px">
       ${o.status === 'new' && can('acceptOrders') ? `<button onclick="openAccept('${o.id}')">Accept order…</button>` : ''}
       ${o.status !== 'new' && o.paymentStatus !== 'paid' && can('takePayment') ? `<button onclick="takePayment('${o.id}')">Take payment (${money(o.price)})</button>` : ''}
-      ${nextBtn && can('advanceStatus') ? (o.status === 'ready' && o.paymentStatus !== 'paid'
+      ${nextBtn && can('advanceStatus') && !(o.status === 'ready' && state.user?.role === 'laundry') ? (o.status === 'ready' && o.paymentStatus !== 'paid'
           ? `<button disabled title="Collect payment first">${nextBtn} — collect payment first</button>`
           : `<button onclick="advance('${o.id}', true)">${nextBtn}</button>`) : ''}
+      ${['accepted', 'cleaning', 'ready'].includes(o.status) && can('advanceStatus') ? `<button class="secondary" onclick="reportDelay('${o.id}')">🔕 Report a delay (mute reminder 30 min)</button>` : ''}
       ${REVERSE_LABEL[o.status] && can('reverseStatus') ? `<button class="secondary" onclick="revert('${o.id}', true)">↩ Move back to ${REVERSE_LABEL[o.status]}</button>` : ''}
       ${o.status !== 'new' && canModify ? `<button class="secondary" onclick="openModify('${o.id}')">Edit order</button>` : ''}
       ${o.status !== 'new' && o.status !== 'completed' && o.status !== 'cancelled' && !canModify ? `<p class="muted" style="font-size:13px">Only an admin can edit an accepted order.</p>` : ''}
@@ -769,6 +823,12 @@ window.advance = async (id, close) => {
 };
 window.cancelOrder = async (id) => { const reason = prompt('Reason for cancelling (optional):'); if (reason === null) return; try { await api('POST', `/orders/${id}/cancel`, { reason }); closeModal(); renderTab(); } catch (e) { alert(e.message); } };
 window.revert = async (id, close) => { if (!confirm('Move this order back one stage?')) return; try { await api('POST', `/orders/${id}/revert`, {}); if (close) closeModal(); renderTab(); } catch (e) { alert(e.message); } };
+window.reportDelay = async (id) => {
+  const reason = prompt('Reason for the delay (this mutes the reminder for 30 minutes, then it resumes if the order still hasn\'t moved):');
+  if (reason === null || !reason.trim()) return;
+  try { await api('POST', `/orders/${id}/delay-reason`, { reason: reason.trim() }); state._lastFollowUpPing = Date.now(); closeModal(); renderTab(); }
+  catch (e) { alert(e.message); }
+};
 window.takePayment = async (id) => {
   const o = await api('GET', `/orders/${id}`);
   openModal(`
@@ -967,8 +1027,9 @@ window.openCashier = (c) => {
     <label>Name</label><input id="cshName" value="${c ? esc(c.name) : ''}">
     <label>Email <span class="muted">(optional — for invitations)</span></label><input id="cshEmail" type="email" value="${c ? esc(c.email || '') : ''}" placeholder="name@example.com">
     <label>Role</label>
-    <select id="cshRole" onchange="document.getElementById('permBox').style.display=this.value==='admin'?'none':'block'">
-      <option value="cashier" ${c && c.role === 'cashier' ? 'selected' : ''}>Cashier (limited)</option>
+    <select id="cshRole" onchange="onRoleChange(this.value)">
+      <option value="cashier" ${c && c.role === 'cashier' ? 'selected' : ''}>Cashier (reception)</option>
+      <option value="laundry" ${c && c.role === 'laundry' ? 'selected' : ''}>Laundry person (cleaning → ready)</option>
       <option value="admin" ${c && c.role === 'admin' ? 'selected' : ''}>Admin (full access)</option>
     </select>
     <label>PIN ${c ? '(leave blank to keep current)' : '(4–8 digits)'}</label>
@@ -980,6 +1041,18 @@ window.openCashier = (c) => {
     ${c ? `<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-weight:400"><input type="checkbox" id="cshActive" style="width:auto" ${c.active ? 'checked' : ''}> Active</label>` : ''}
     <button class="btn-full" style="margin-top:16px" onclick="saveCashier(${c ? `'${c.id}'` : 'null'})">Save</button>
   `);
+  if (!c) onRoleChange('cashier'); // seed default permissions for a new staff member
+};
+const ROLE_DEFAULTS = {
+  cashier: { acceptOrders: true, advanceStatus: true, takePayment: true, messageGuests: true },
+  laundry: { advanceStatus: true },
+  admin: {},
+};
+window.onRoleChange = (role) => {
+  const box = document.getElementById('permBox');
+  if (box) box.style.display = role === 'admin' ? 'none' : 'block';
+  const defs = ROLE_DEFAULTS[role] || {};
+  document.querySelectorAll('[data-perm]').forEach((cb) => { cb.checked = !!defs[cb.dataset.perm]; });
 };
 window.saveCashier = async (id) => {
   const role = $('#cshRole').value;
@@ -1060,8 +1133,11 @@ async function renderSettings(view) {
       <p class="hint">Remind reception to follow up on accepted laundry that hasn't moved, and on orders past their pickup time. Reminders repeat until the order moves on, and pause during quiet hours.</p>
       <div class="row">
         <div><label>Follow up after order accepted (hours)</label><input id="stFollowUp" type="number" min="0.25" step="0.25" value="${s.followUpHours}"></div>
-        <div><label>Repeat reminder every (hours)</label><input id="stFollowEvery" type="number" min="0.25" step="0.25" value="${s.followUpEveryHours}"></div>
+        <div><label>Repeat email/push reminder every (hours)</label><input id="stFollowEvery" type="number" min="0.25" step="0.25" value="${s.followUpEveryHours}"></div>
       </div>
+      <label>Start pickup reminders this many hours before pickup time</label>
+      <input id="stPickupLead" type="number" min="0" step="0.5" value="${s.pickupLeadHours}">
+      <p class="muted" style="font-size:12px;margin:6px 0 0">No sound is played after the pickup time has passed — only before it.</p>
       <div class="row">
         <div><label>Quiet hours from</label>
           <select id="stQuietFrom">${hourOptions(s.quietFrom)}</select></div>
@@ -1153,6 +1229,7 @@ window.saveSettings = async () => {
     currency: { code, symbol }, pricePerLoad: $('#stPrice').value, piecesPerLoad: $('#stPieces').value,
     turnaroundHours: $('#stTurn').value,
     followUpHours: $('#stFollowUp').value, followUpEveryHours: $('#stFollowEvery').value,
+    pickupLeadHours: $('#stPickupLead').value,
     quietFrom: $('#stQuietFrom').value, quietTo: $('#stQuietTo').value,
     adminEmail: $('#stAdminEmail').value.trim(), receptionEmail: $('#stRecEmail').value.trim(),
     alertRecipients: $('#stAlertRecipients').value,

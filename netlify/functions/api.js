@@ -118,6 +118,10 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
         const user = await requirePerm(headers, 'advanceStatus');
         return json(200, await L.advanceStatus(id, body.target, user));
       }
+      if (m === 'POST' && id && parts[2] === 'delay-reason') {
+        const user = await requirePerm(headers, 'advanceStatus');
+        return json(200, await L.setDelayReason(id, body.reason, user));
+      }
       if (m === 'POST' && id && parts[2] === 'revert') {
         const user = await requirePerm(headers, 'reverseStatus');
         return json(200, await L.revertStatus(id, user, body.reason));

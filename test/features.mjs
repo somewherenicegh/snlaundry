@@ -13,7 +13,8 @@ delete process.env.RESEND_API_KEY;
 
 const { handleRequest } = await import('../netlify/functions/api.js');
 const { sentLog, clearSentLog, inviteEmail } = await import('../netlify/functions/lib/email.js');
-const { effectiveBaseUrl, inQuietHours } = await import('../netlify/functions/lib/logic.js');
+const { effectiveBaseUrl, inQuietHours, findFollowUpOrders } = await import('../netlify/functions/lib/logic.js');
+const featStore = await import('../netlify/functions/lib/store.js');
 
 let pass = 0, fail = 0; const out = [];
 const ok = (n, c, x = '') => { if (c) { pass++; out.push(`  ✅ ${n}`); } else { fail++; out.push(`  ❌ ${n} ${x}`); } };
@@ -224,6 +225,48 @@ try {
   ok('2 AM is within 18:00–07:00 quiet window', inQuietHours(new Date(2020, 0, 1, 2, 0, 0), 18, 7) === true);
   ok('noon is not quiet', inQuietHours(new Date(2020, 0, 1, 12, 0, 0), 18, 7) === false);
   ok('equal from/to disables quiet entirely', inQuietHours(new Date(), 0, 0) === false);
+
+  section('Laundry person role');
+  r = await api('POST', '/api/cashiers', { headers: H(adminT), body: { name: 'Kwame', pin: '2020', role: 'laundry' } });
+  ok('laundry role created', r.status === 201 && r.body.role === 'laundry', JSON.stringify(r.body));
+  ok('laundry has advanceStatus but not takePayment/acceptOrders', r.body.permissions.advanceStatus === true && !r.body.permissions.takePayment && !r.body.permissions.acceptOrders);
+  const laundryAuth = await api('POST', '/api/auth/pin', { body: { pin: '2020' } });
+  const lo = await api('POST', '/api/orders', { body: { guestName: 'L Guest', guestEmail: 'l@example.com', items: 5 } });
+  await api('POST', `/api/orders/${lo.body.id}/accept`, { headers: H(adminT), body: { room: 'Duafe', paymentStatus: 'paid', paymentMethod: 'cash' } });
+  r = await api('POST', `/api/orders/${lo.body.id}/advance`, { headers: H(laundryAuth.body.token), body: {} });
+  ok('laundry advances accepted → cleaning', r.status === 200 && r.body.status === 'cleaning');
+  r = await api('POST', `/api/orders/${lo.body.id}/advance`, { headers: H(laundryAuth.body.token), body: {} });
+  ok('laundry advances cleaning → ready', r.status === 200 && r.body.status === 'ready');
+  r = await api('POST', `/api/orders/${lo.body.id}/advance`, { headers: H(laundryAuth.body.token), body: {} });
+  ok('laundry cannot mark picked up', r.status === 403, `got ${r.status}`);
+  r = await api('POST', `/api/orders/${lo.body.id}/advance`, { headers: H(adminT), body: {} });
+  ok('admin can mark picked up', r.status === 200 && r.body.status === 'completed');
+
+  section('Delay reason snoozes the follow-up');
+  await api('PUT', '/api/settings', { headers: H(adminT), body: { quietFrom: 0, quietTo: 0, followUpHours: 0.5, followUpEveryHours: 0.5, pickupLeadHours: 0 } });
+  const d1 = await api('POST', '/api/orders', { body: { guestName: 'D Guest', guestEmail: 'd@example.com', items: 4 } });
+  await api('POST', `/api/orders/${d1.body.id}/accept`, { headers: H(adminT), body: { room: 'X' } });
+  let ords = await featStore.getCollection('orders');
+  ords.find((o) => o.id === d1.body.id).acceptedAt = new Date(Date.now() - 3600000).toISOString(); // 1h ago
+  await featStore.saveCollection('orders', ords);
+  let due = await findFollowUpOrders();
+  ok('accepted-too-long order is due', due.some((o) => o.id === d1.body.id));
+  r = await api('POST', `/api/orders/${d1.body.id}/delay-reason`, { headers: H(adminT), body: { reason: 'machine broken' } });
+  ok('delay reason recorded', r.status === 200 && r.body.delayReason === 'machine broken');
+  due = await findFollowUpOrders();
+  ok('snoozed order is not due', !due.some((o) => o.id === d1.body.id));
+
+  section('Pickup-approaching triggers, past-pickup does not');
+  await api('PUT', '/api/settings', { headers: H(adminT), body: { quietFrom: 0, quietTo: 0, followUpHours: 100, pickupLeadHours: 3 } });
+  const p1 = await api('POST', '/api/orders', { body: { guestName: 'P Guest', guestEmail: 'p@example.com', items: 3 } });
+  await api('POST', `/api/orders/${p1.body.id}/accept`, { headers: H(adminT), body: { room: 'X', pickupAt: new Date(Date.now() + 2 * 3600000).toISOString() } });
+  due = await findFollowUpOrders();
+  ok('order 2h before pickup (lead 3h) is due', due.some((o) => o.id === p1.body.id && o._reason === 'pickupSoon'), JSON.stringify(due.map((o) => [o.id, o._reason])));
+  ords = await featStore.getCollection('orders');
+  ords.find((o) => o.id === p1.body.id).pickupAt = new Date(Date.now() - 3600000).toISOString(); // pickup 1h ago
+  await featStore.saveCollection('orders', ords);
+  due = await findFollowUpOrders();
+  ok('order past pickup time is NOT due (no sound after pickup)', !due.some((o) => o.id === p1.body.id));
 
   section('Admin: delete orders in a timeframe');
   const before = (await api('GET', '/api/orders', { headers: H(adminT) })).body.length;

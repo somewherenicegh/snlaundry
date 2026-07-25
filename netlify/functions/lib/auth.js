@@ -74,6 +74,24 @@ export function can(user, permission) {
   return !!(user.permissions && user.permissions[permission]);
 }
 
+// Default permissions for a "laundry person": they only move laundry through
+// cleaning → ready. No accepting, payments, messaging, reports or settings.
+export function defaultLaundryPermissions() {
+  return {
+    acceptOrders: false,
+    advanceStatus: true,
+    reverseStatus: false,
+    modifyAccepted: false,
+    cancelOrders: false,
+    takePayment: false,
+    messageGuests: false,
+    viewReports: false,
+    exportReports: false,
+    manageCashiers: false,
+    manageSettings: false,
+  };
+}
+
 // Default permission set for a brand-new cashier (safe, minimal).
 export function defaultCashierPermissions() {
   return {
