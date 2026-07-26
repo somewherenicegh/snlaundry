@@ -239,24 +239,27 @@ function urlBase64ToUint8Array(b64) {
 window.enableNotifications = async () => {
   if (!pushSupported()) { alert('This browser does not support notifications.'); return; }
   const perm = await Notification.requestPermission();
-  if (perm !== 'granted') { updateNotifyBtn(); return; }
+  if (perm !== 'granted') { alert('Notifications are blocked for this site. Allow them in your browser settings, then tap Enable alerts again.'); return; }
   try {
     const reg = await navigator.serviceWorker.ready;
     const { key } = await (await fetch('/api/push/key')).json();
-    if (key) {
-      const sub = (await reg.pushManager.getSubscription())
-        || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) });
-      const label = `${state.user?.name || 'Staff'} · ${(navigator.platform || 'device')}`;
-      await api('POST', '/push/subscribe', { subscription: sub.toJSON ? sub.toJSON() : sub, label });
+    if (!key) {
+      alert('Permission granted — but background push isn\'t configured on the server yet, so this device can\'t be registered. An admin needs to add the VAPID keys, then tap Enable alerts again on each device.');
+      return;
     }
-  } catch (e) { console.warn('push subscribe failed', e); }
-  updateNotifyBtn();
+    const sub = (await reg.pushManager.getSubscription())
+      || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) });
+    const label = `${state.user?.name || 'Staff'} · ${(navigator.platform || 'device')}`;
+    await api('POST', '/push/subscribe', { subscription: sub.toJSON ? sub.toJSON() : sub, label });
+    alert('✓ Alerts enabled on this device. An admin can see it under Settings → Notification devices.');
+  } catch (e) { alert('Could not enable background alerts: ' + (e.message || e)); }
 };
 function updateNotifyBtn() {
   const b = document.getElementById('notifyBtn');
   if (!b) return;
-  const granted = ('Notification' in window) && Notification.permission === 'granted';
-  b.classList.toggle('hidden', granted || !pushSupported());
+  // Keep the button available whenever push is supported so a device can (re)register
+  // — e.g. after VAPID keys are added.
+  b.classList.toggle('hidden', !pushSupported());
 }
 // Fallback: show a system notification while the tab is in the background even if
 // server push isn't configured (works as long as the browser is running).
@@ -1131,6 +1134,8 @@ async function renderSettings(view) {
       <h3 style="margin-top:0">Rooms</h3>
       <p class="hint">Room names cashiers pick from when accepting an order — one per line. Leave empty to let them type room names freely.</p>
       <textarea id="stRooms" rows="4" placeholder="Duafe&#10;Sankofa&#10;Adinkra">${esc((s.rooms || []).join('\n'))}</textarea>
+      <div id="roomsMsg"></div>
+      <button class="secondary" style="margin-top:10px" onclick="saveRooms()">Save rooms</button>
     </div>
     <div class="card">
       <h3 style="margin-top:0">Pricing & loads</h3>
@@ -1258,6 +1263,12 @@ window.restoreBackup = async (input) => {
     notice($('#bkMsg'), 'ok', `Restored ${r.counts.orders} order(s) and ${r.counts.cashiers} staff. Reloading…`);
     setTimeout(() => location.reload(), 1600);
   } catch (e) { notice($('#bkMsg'), 'err', /JSON/.test(e.message) ? 'That file isn\'t a valid backup.' : e.message); }
+};
+window.saveRooms = async () => {
+  try {
+    state.settings = await api('PUT', '/settings', { rooms: $('#stRooms').value });
+    notice($('#roomsMsg'), 'ok', `Saved ${state.settings.rooms.length} room(s). Cashiers will see them in the room dropdown.`);
+  } catch (e) { notice($('#roomsMsg'), 'err', e.message); }
 };
 window.saveSequence = async () => {
   const next = parseInt($('#seqNext').value, 10);
