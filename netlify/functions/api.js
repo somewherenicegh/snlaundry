@@ -5,7 +5,7 @@
 
 import { verifyToken, can, PERMISSIONS } from './lib/auth.js';
 import * as L from './lib/logic.js';
-import { vapidPublicKey, addSubscription, removeSubscription } from './lib/push.js';
+import { vapidPublicKey, addSubscription, removeSubscription, listDevices, updateSubscription, removeSubscriptionById } from './lib/push.js';
 
 const json = (status, body) => ({ status, body });
 
@@ -160,12 +160,25 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
     // ---------- push subscriptions ----------
     if (parts[0] === 'push') {
       if (parts[1] === 'subscribe' && m === 'POST') {
-        requireUser(headers);
-        return json(200, await addSubscription(body.subscription));
+        const payload = requireUser(headers);
+        return json(200, await addSubscription(body.subscription, { label: body.label, role: payload.role }));
       }
       if (parts[1] === 'unsubscribe' && m === 'POST') {
         requireUser(headers);
         return json(200, await removeSubscription(body.endpoint));
+      }
+      // Admin: manage the registered devices (labels + open-shift reminder opt-in).
+      if (parts[1] === 'devices' && m === 'GET' && !parts[2]) {
+        await requireAdmin(headers);
+        return json(200, await listDevices());
+      }
+      if (parts[1] === 'devices' && parts[2] && m === 'PATCH') {
+        await requireAdmin(headers);
+        return json(200, await updateSubscription(parts[2], body));
+      }
+      if (parts[1] === 'devices' && parts[2] && m === 'DELETE') {
+        await requireAdmin(headers);
+        return json(200, await removeSubscriptionById(parts[2]));
       }
     }
 
@@ -173,6 +186,12 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
     if (parts[0] === 'orders' && parts[1] === 'delete-range' && m === 'POST') {
       await requireAdmin(headers);
       return json(200, await L.deleteOrdersInRange(body));
+    }
+
+    // ---------- admin: full data backup / restore ----------
+    if (parts[0] === 'backup') {
+      if (m === 'GET' && !parts[1]) { await requireAdmin(headers); return json(200, await L.exportAll()); }
+      if (m === 'POST' && parts[1] === 'restore') { await requireAdmin(headers); return json(200, await L.importAll(body.data)); }
     }
 
     // ---------- admin: order number sequence ----------

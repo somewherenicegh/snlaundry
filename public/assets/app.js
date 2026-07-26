@@ -246,7 +246,8 @@ window.enableNotifications = async () => {
     if (key) {
       const sub = (await reg.pushManager.getSubscription())
         || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) });
-      await api('POST', '/push/subscribe', { subscription: sub.toJSON ? sub.toJSON() : sub });
+      const label = `${state.user?.name || 'Staff'} · ${(navigator.platform || 'device')}`;
+      await api('POST', '/push/subscribe', { subscription: sub.toJSON ? sub.toJSON() : sub, label });
     }
   } catch (e) { console.warn('push subscribe failed', e); }
   updateNotifyBtn();
@@ -685,6 +686,14 @@ function paymentPref(o) {
   if (o.paymentTiming === 'now') return `pay now (${o.paymentMethod || 'cash'})`;
   return 'pay at pickup';
 }
+// Room input: a dropdown of admin-defined rooms, or a free-text box if none are set.
+function roomField(id, current) {
+  const rooms = state.settings?.rooms || [];
+  if (!rooms.length) return `<input id="${id}" placeholder="e.g. Duafe" value="${esc(current || '')}">`;
+  const list = rooms.slice();
+  if (current && !list.includes(current)) list.push(current);
+  return `<select id="${id}"><option value="">— select room —</option>${list.map(r => `<option value="${esc(r)}" ${current === r ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select>`;
+}
 
 window.openOrder = async (id) => {
   const o = await api('GET', `/orders/${id}`);
@@ -744,7 +753,7 @@ window.openAccept = async (id) => {
     <p class="hint">${esc(o.guestName)} · ${o.items} items · ${o.loads} load(s)</p>
     <div id="acceptMsg"></div>
     <label>Room name</label>
-    <input id="acRoom" placeholder="e.g. Duafe" value="${esc(o.room || '')}">
+    ${roomField('acRoom', o.room)}
     <label>Ready for pickup</label>
     <input id="acPickup" type="datetime-local" value="${pickupDefault}">
     <p class="muted" style="font-size:12px;margin:6px 0 0">Defaults to 6:00 PM tomorrow — adjust if needed.</p>
@@ -783,7 +792,7 @@ window.openModify = async (id) => {
     <button class="ghost small close" onclick="closeModal()">✕</button>
     <h3>Edit order #${o.number}</h3>
     <div id="modMsg"></div>
-    <label>Room name</label><input id="mdRoom" placeholder="e.g. Duafe" value="${esc(o.room || '')}">
+    <label>Room name</label>${roomField('mdRoom', o.room)}
     <label>Items</label><input id="mdItems" type="number" min="1" value="${o.items}">
     <label>Price (${cur()})</label><input id="mdPrice" type="number" step="0.01" min="0" value="${o.price ?? ''}">
     <label>Reason for price change <span class="muted">(required if you change the price)</span></label>
@@ -1119,6 +1128,11 @@ async function renderSettings(view) {
       </div>
     </div>
     <div class="card">
+      <h3 style="margin-top:0">Rooms</h3>
+      <p class="hint">Room names cashiers pick from when accepting an order — one per line. Leave empty to let them type room names freely.</p>
+      <textarea id="stRooms" rows="4" placeholder="Duafe&#10;Sankofa&#10;Adinkra">${esc((s.rooms || []).join('\n'))}</textarea>
+    </div>
+    <div class="card">
       <h3 style="margin-top:0">Pricing & loads</h3>
       <label>Currency</label>
       <select id="stCurrency">${CURRENCIES.map(([c, sym]) => `<option value="${c}|${sym}" ${s.currency?.code === c ? 'selected' : ''}>${c} (${sym})</option>`).join('')}</select>
@@ -1178,6 +1192,22 @@ async function renderSettings(view) {
       </div>
     </div>
 
+    <div class="card">
+      <h3 style="margin-top:0">Backup & restore</h3>
+      <p class="hint">Download a full snapshot of everything (orders, staff, settings, shifts). Keep the file private — it includes login PIN hashes. Restore it later to recover your data.</p>
+      <div id="bkMsg"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="secondary" onclick="downloadBackup()">⬇ Download backup</button>
+        <label class="btn secondary" style="cursor:pointer;text-align:center">⬆ Restore from file…<input type="file" id="bkFile" accept="application/json,.json" style="display:none" onchange="restoreBackup(this)"></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Notification devices</h3>
+      <p class="hint">Every device that enabled alerts receives order, message and follow-up notifications even when the app is closed. Tick a device to also push it the <b>"start a shift"</b> reminder when closed — leave others unticked so only chosen phones get that one.</p>
+      <div id="devList" class="muted">Loading…</div>
+    </div>
+
     <div class="card" style="margin-top:20px;border:1px solid #f0cfc9">
       <h3 style="margin-top:0;color:var(--danger)">Delete orders</h3>
       <p class="hint">Permanently remove all orders created within a date range. This cannot be undone.</p>
@@ -1189,7 +1219,46 @@ async function renderSettings(view) {
       <button class="danger" style="margin-top:14px" onclick="deleteOrdersRange()">Delete orders in range</button>
     </div>`;
   drawQr(orderUrl);
+  loadDevices();
 }
+async function loadDevices() {
+  const box = document.getElementById('devList');
+  if (!box) return;
+  let devs = [];
+  try { devs = await api('GET', '/push/devices'); } catch { box.textContent = 'Could not load devices.'; return; }
+  if (!devs.length) { box.textContent = 'No devices have enabled alerts yet. On each device, tap "🔔 Enable alerts" in the top bar.'; return; }
+  box.innerHTML = devs.map(d => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+    <div style="flex:1 1 160px"><b style="color:var(--ink)">${esc(d.label)}</b> <span class="pill">${esc(d.role)}</span><br><span class="muted" style="font-size:12px">enabled ${fmt(d.at)}</span></div>
+    <label style="display:flex;gap:6px;align-items:center;font-weight:400;margin:0;font-size:13px"><input type="checkbox" style="width:auto" ${d.shiftReminders ? 'checked' : ''} onchange="toggleDeviceShift('${d.id}', this.checked)"> shift reminder</label>
+    <button class="small danger" onclick="removeDevice('${d.id}')">Remove</button>
+  </div>`).join('');
+}
+window.toggleDeviceShift = async (id, on) => { try { await api('PATCH', `/push/devices/${id}`, { shiftReminders: on }); } catch (e) { alert(e.message); } };
+window.removeDevice = async (id) => { if (!confirm('Remove this device from notifications?')) return; try { await api('DELETE', `/push/devices/${id}`); loadDevices(); } catch (e) { alert(e.message); } };
+window.downloadBackup = async () => {
+  try {
+    const res = await fetch('/api/backup', { headers: { authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new Error('Backup failed — are you signed in as admin?');
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `laundry-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    notice($('#bkMsg'), 'ok', 'Backup downloaded. Store it somewhere safe.');
+  } catch (e) { notice($('#bkMsg'), 'err', e.message); }
+};
+window.restoreBackup = async (input) => {
+  const f = input.files[0]; input.value = '';
+  if (!f) return;
+  if (!confirm('Restore will OVERWRITE all current data (orders, staff, settings) with this file. Continue?')) return;
+  try {
+    const data = JSON.parse(await f.text());
+    const r = await api('POST', '/backup/restore', { data });
+    notice($('#bkMsg'), 'ok', `Restored ${r.counts.orders} order(s) and ${r.counts.cashiers} staff. Reloading…`);
+    setTimeout(() => location.reload(), 1600);
+  } catch (e) { notice($('#bkMsg'), 'err', /JSON/.test(e.message) ? 'That file isn\'t a valid backup.' : e.message); }
+};
 window.saveSequence = async () => {
   const next = parseInt($('#seqNext').value, 10);
   if (!next || next < 1) return notice($('#seqMsg'), 'err', 'Enter a positive whole number.');
@@ -1226,7 +1295,7 @@ window.saveSettings = async () => {
   const [code, symbol] = $('#stCurrency').value.split('|');
   const body = {
     hostelName: $('#stName').value.trim(), accentColor: $('#stColor').value, hoverColor: $('#stHover').value,
-    currency: { code, symbol }, pricePerLoad: $('#stPrice').value, piecesPerLoad: $('#stPieces').value,
+    currency: { code, symbol }, rooms: $('#stRooms').value, pricePerLoad: $('#stPrice').value, piecesPerLoad: $('#stPieces').value,
     turnaroundHours: $('#stTurn').value,
     followUpHours: $('#stFollowUp').value, followUpEveryHours: $('#stFollowEvery').value,
     pickupLeadHours: $('#stPickupLead').value,

@@ -268,6 +268,36 @@ try {
   due = await findFollowUpOrders();
   ok('order past pickup time is NOT due (no sound after pickup)', !due.some((o) => o.id === p1.body.id));
 
+  section('Admin-defined rooms');
+  r = await api('PUT', '/api/settings', { headers: H(adminT), body: { rooms: 'Duafe\nSankofa, Adinkra\nDuafe' } });
+  ok('rooms parsed and de-duped', Array.isArray(r.body.rooms) && r.body.rooms.length === 3 && r.body.rooms.includes('Duafe'), JSON.stringify(r.body.rooms));
+
+  section('Backup export / restore');
+  r = await api('GET', '/api/backup', { headers: H(adminT) });
+  ok('export returns a full snapshot', r.status === 200 && r.body.app === 'hostel-laundry' && Array.isArray(r.body.cashiers) && Array.isArray(r.body.orders));
+  const snap = r.body;
+  r = await api('GET', '/api/backup', { headers: H(yawAuth.body.token) });
+  ok('non-admin cannot export', r.status === 403);
+  r = await api('POST', '/api/backup/restore', { headers: H(adminT), body: { data: { foo: 1 } } });
+  ok('rejects a non-backup file', r.status === 400);
+  r = await api('POST', '/api/backup/restore', { headers: H(adminT), body: { data: { app: 'hostel-laundry', cashiers: [{ role: 'cashier', active: true }] } } });
+  ok('refuses a restore with no admin (anti-lockout)', r.status === 400);
+  r = await api('POST', '/api/backup/restore', { headers: H(adminT), body: { data: snap } });
+  ok('restores a valid snapshot', r.status === 200 && r.body.ok);
+
+  section('Notification devices + open-shift flag');
+  r = await api('POST', '/api/push/subscribe', { headers: H(adminT), body: { subscription: { endpoint: 'https://push/dev1', keys: { p256dh: 'a', auth: 'b' } }, label: 'Reception PC' } });
+  ok('device subscribes with a label', r.status === 200 && r.body.ok);
+  r = await api('GET', '/api/push/devices', { headers: H(adminT) });
+  const dev = r.body.find((d) => d.label === 'Reception PC');
+  ok('admin lists devices (default: no shift reminder)', r.status === 200 && dev && dev.role === 'admin' && dev.shiftReminders === false, JSON.stringify(dev || {}));
+  r = await api('PATCH', `/api/push/devices/${dev.id}`, { headers: H(adminT), body: { shiftReminders: true } });
+  ok('admin flags a device for the open-shift reminder', r.status === 200 && r.body.device.shiftReminders === true);
+  r = await api('GET', '/api/push/devices', { headers: H(yawAuth.body.token) });
+  ok('non-admin cannot manage devices', r.status === 403);
+  r = await api('DELETE', `/api/push/devices/${dev.id}`, { headers: H(adminT) });
+  ok('admin removes a device', r.status === 200 && r.body.ok);
+
   section('Admin: delete orders in a timeframe');
   const before = (await api('GET', '/api/orders', { headers: H(adminT) })).body.length;
   ok('there are orders to delete', before > 0);

@@ -49,6 +49,7 @@ export function defaultSettings() {
     accentColor: '#0f766e',
     hoverColor: '#FFF8ED',
     currency: { code: 'GHS', symbol: '₵' },
+    rooms: [], // admin-defined room names cashiers pick from
     pricePerLoad: 10,
     piecesPerLoad: 25,
     turnaroundHours: 24,
@@ -63,6 +64,12 @@ export function defaultSettings() {
     baseUrl: '',
     configured: false,
   };
+}
+
+// Parse room names from an array or a newline/comma separated string.
+export function normalizeRooms(input) {
+  const arr = Array.isArray(input) ? input : String(input || '').split(/[\n,]+/);
+  return [...new Set(arr.map((s) => String(s).trim()).filter(Boolean))].slice(0, 300);
 }
 
 // Parse a list of emails from an array or a comma/space/newline separated string.
@@ -88,6 +95,7 @@ export async function updateSettings(patch) {
   next.pickupLeadHours = Math.max(0, Number(next.pickupLeadHours) || 3);
   next.quietFrom = clampHour(next.quietFrom, 18);
   next.quietTo = clampHour(next.quietTo, 7);
+  next.rooms = normalizeRooms(next.rooms);
   next.alertRecipients = normalizeEmails(next.alertRecipients);
   await writeJSON(K_SETTINGS, next);
   return next;
@@ -504,6 +512,41 @@ export async function listThreads() {
     .sort((a, b) => new Date(b.lastMessage.at) - new Date(a.lastMessage.at));
 }
 
+// ------------------------------------------------------------- Backup/restore -
+// Full snapshot of everything (admin only). Includes cashier PIN hashes so a
+// restore reproduces logins exactly — keep the file private.
+export async function exportAll() {
+  return {
+    app: 'hostel-laundry',
+    version: 1,
+    exportedAt: nowIso(),
+    settings: await readJSON(K_SETTINGS, null),
+    cashiers: await getCollection(K_CASHIERS),
+    orders: await getCollection(K_ORDERS),
+    shifts: await getCollection(K_SHIFTS),
+    meta: await readJSON(K_META, null),
+  };
+}
+
+export async function importAll(data) {
+  if (!data || typeof data !== 'object' || data.app !== 'hostel-laundry') {
+    throw httpError(400, 'That doesn\'t look like a laundry backup file.');
+  }
+  // Safety: never restore a state with no admin (would lock everyone out).
+  if (Array.isArray(data.cashiers) && !data.cashiers.some((c) => c.role === 'admin' && c.active !== false)) {
+    throw httpError(400, 'Backup has no active admin — refusing to restore (you would be locked out).');
+  }
+  if (data.settings) await writeJSON(K_SETTINGS, data.settings);
+  if (Array.isArray(data.cashiers)) await saveCollection(K_CASHIERS, data.cashiers);
+  if (Array.isArray(data.orders)) await saveCollection(K_ORDERS, data.orders);
+  if (Array.isArray(data.shifts)) await saveCollection(K_SHIFTS, data.shifts);
+  if (data.meta) await writeJSON(K_META, data.meta);
+  return {
+    ok: true,
+    counts: { cashiers: (data.cashiers || []).length, orders: (data.orders || []).length, shifts: (data.shifts || []).length },
+  };
+}
+
 // ------------------------------------------------------------------- Reports --
 export async function revenueReport({ from, to, shift } = {}) {
   const settings = await getSettings();
@@ -780,6 +823,21 @@ export async function closeShift({ note, acknowledged, confirmedOrderIds }, acto
   shift.closingInProgress = inProgress.length;
   await saveCollection(K_SHIFTS, shifts);
   return shift;
+}
+
+// Is any reception shift currently open (any cashier)?
+export async function anyShiftOpen() {
+  const shifts = await getCollection(K_SHIFTS);
+  return shifts.some((s) => s.status === 'open');
+}
+
+// Small meta store (used e.g. to throttle the scheduled shift-open reminder).
+export async function getMeta() { return (await readJSON(K_META, {})) || {}; }
+export async function setMeta(patch) {
+  const m = await getMeta();
+  const next = { ...m, ...patch };
+  await writeJSON(K_META, next);
+  return next;
 }
 
 export async function listShifts({ from, to } = {}) {

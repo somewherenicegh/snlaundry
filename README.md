@@ -51,9 +51,10 @@ Runs entirely on **GitHub + Netlify**. No separate database server:
 - **Repeating reception chimes**, each until resolved: a new-order ping (until every order is accepted), the same urgent ping for orders **stuck past the threshold** (default 4h), a new-message ping (until reception reads it), and a calmer start-a-shift chime (until a shift is open). **Only an admin can mute** the sound.
 - **Auto-lock** after 5 minutes of inactivity.
 - **Shift-boundary lock:** when the clock crosses into a new shift period, the terminal locks and asks whether to start a new shift or continue the current one — continuing requires the PIN of the cashier who started that shift. If they continue, the same prompt reappears on **every** subsequent auto-lock until a new shift is finally started.
-- Orders are tagged by **room name** (e.g. *Duafe*), not room number.
+- Orders are tagged by **room name** (e.g. *Duafe*) — chosen from an **admin-defined dropdown** (Settings → Rooms), or free text if no rooms are set.
+- **One-click backup & restore** (admin Settings): download a full JSON snapshot of all data, and restore it later.
 - Generic app icon (favicon), and staff can type their PIN on a physical keyboard (PC) as well as the on-screen pad.
-- **Installable app (PWA)** with **push notifications** — reception is alerted to new orders and messages even when the app tab is in the background or closed.
+- **Installable app (PWA)** with **push notifications** — new orders, messages and follow-ups reach every device that enabled alerts **even when the app is fully closed**. The one exception is the **"start a shift"** reminder: in Settings → Notification devices, an admin ticks exactly which device(s) should receive that one when closed (everyone still hears it in-app).
 - **Admin can bulk-delete orders** created within a chosen date range (Settings → Delete orders).
 
 ---
