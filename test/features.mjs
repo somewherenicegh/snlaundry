@@ -298,6 +298,25 @@ try {
   r = await api('DELETE', `/api/push/devices/${dev.id}`, { headers: H(adminT) });
   ok('admin removes a device', r.status === 200 && r.body.ok);
 
+  section('Required fields (admin-controlled)');
+  // email required by default
+  r = await api('POST', '/api/orders', { body: { guestName: 'No Email', items: 3, paymentTiming: 'pickup' } });
+  ok('order without email is blocked when required', r.status === 400, `got ${r.status}`);
+  await api('PUT', '/api/settings', { headers: H(adminT), body: { requireEmail: false } });
+  r = await api('POST', '/api/orders', { body: { guestName: 'No Email', items: 3 } });
+  ok('order without email allowed once requirement is off', r.status === 201);
+  r = await api('GET', `/api/orders/public/${r.body.publicId}`);
+  ok('payment defaults to pay-at-pickup', r.body.paymentTiming === 'pickup');
+  await api('PUT', '/api/settings', { headers: H(adminT), body: { requireEmail: true } });
+  // room required on accept by default
+  const rq = await api('POST', '/api/orders', { body: { guestName: 'Room Req', guestEmail: 'rr@example.com', items: 2, paymentTiming: 'pickup' } });
+  r = await api('POST', `/api/orders/${rq.body.id}/accept`, { headers: H(adminT), body: {} });
+  ok('accept without a room is blocked when required', r.status === 400, `got ${r.status}`);
+  await api('PUT', '/api/settings', { headers: H(adminT), body: { requireRoomOnAccept: false } });
+  r = await api('POST', `/api/orders/${rq.body.id}/accept`, { headers: H(adminT), body: {} });
+  ok('accept without a room allowed once requirement is off', r.status === 200 && r.body.status === 'accepted');
+  await api('PUT', '/api/settings', { headers: H(adminT), body: { requireRoomOnAccept: true } });
+
   section('Admin: delete orders in a timeframe');
   const before = (await api('GET', '/api/orders', { headers: H(adminT) })).body.length;
   ok('there are orders to delete', before > 0);

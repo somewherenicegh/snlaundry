@@ -25,6 +25,13 @@ function applyBrand(s) {
     $('#priceHint').textContent =
       `${s.currency.symbol}${Number(s.pricePerLoad).toFixed(2)} per load · up to ${s.piecesPerLoad} items per load. Reception confirms the final price.`;
   }
+  // Email may be optional if the admin turned that off.
+  if (s.requireEmail === false) {
+    const em = $('#email');
+    if (em) { em.required = false; }
+    const lbl = document.querySelector('label[for="email"]');
+    if (lbl) lbl.innerHTML = 'Email address <span class="muted">(optional)</span>';
+  }
 }
 
 function updateLoadHint() {

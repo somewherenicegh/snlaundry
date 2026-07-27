@@ -56,7 +56,7 @@ export async function handleRequest({ method, path, query = {}, body = {}, heade
       return json(200, {
         hostelName: s.hostelName, logoDataUrl: s.logoDataUrl, accentColor: s.accentColor, hoverColor: s.hoverColor,
         currency: s.currency, piecesPerLoad: s.piecesPerLoad, pricePerLoad: s.pricePerLoad,
-        turnaroundHours: s.turnaroundHours,
+        turnaroundHours: s.turnaroundHours, requireEmail: s.requireEmail,
       });
     }
 

@@ -53,6 +53,8 @@ export function defaultSettings() {
     pricePerLoad: 10,
     piecesPerLoad: 25,
     turnaroundHours: 24,
+    requireEmail: true, // guest must give an email when ordering
+    requireRoomOnAccept: true, // reception must set a room when accepting
     followUpHours: 1, // accepted orders older than this need follow-up
     followUpEveryHours: 1, // repeat the email/push reminder this often
     pickupLeadHours: 3, // start "prepare for pickup" reminders this many hours before pickup
@@ -96,6 +98,8 @@ export async function updateSettings(patch) {
   next.quietFrom = clampHour(next.quietFrom, 18);
   next.quietTo = clampHour(next.quietTo, 7);
   next.rooms = normalizeRooms(next.rooms);
+  next.requireEmail = !!next.requireEmail;
+  next.requireRoomOnAccept = !!next.requireRoomOnAccept;
   next.alertRecipients = normalizeEmails(next.alertRecipients);
   await writeJSON(K_SETTINGS, next);
   return next;
@@ -225,16 +229,18 @@ export function computeLoads(items, piecesPerLoad) {
 }
 
 export async function createOrder({ guestName, guestEmail, items, note, paymentTiming, paymentMethod }) {
+  const settings = await getSettings();
   if (!guestName || !String(guestName).trim()) throw httpError(400, 'Name is required');
-  if (!validEmail(guestEmail)) throw httpError(400, 'A valid email is required');
+  const emailStr = String(guestEmail || '').trim().toLowerCase();
+  if (settings.requireEmail && !emailStr) throw httpError(400, 'An email address is required');
+  if (emailStr && !validEmail(emailStr)) throw httpError(400, 'Please enter a valid email address');
   const n = Math.floor(Number(items));
   if (!n || n < 1) throw httpError(400, 'Number of items must be at least 1');
 
-  // Payment preference chosen by the guest at order time.
+  // Payment preference chosen by the guest at order time (form enforces the choice;
+  // default to pay-at-pickup and cash if somehow omitted).
   const timing = paymentTiming === 'now' ? 'now' : 'pickup';
   const method = timing === 'now' ? (paymentMethod === 'card' ? 'card' : 'cash') : null;
-
-  const settings = await getSettings();
   const orders = await getCollection(K_ORDERS);
   const number = await nextOrderNumber();
   const loads = computeLoads(n, settings.piecesPerLoad);
@@ -244,7 +250,7 @@ export async function createOrder({ guestName, guestEmail, items, note, paymentT
     publicId: newId('pub'),
     number,
     guestName: String(guestName).trim(),
-    guestEmail: String(guestEmail).trim().toLowerCase(),
+    guestEmail: emailStr,
     items: n,
     loads,
     status: 'new',
@@ -305,10 +311,12 @@ export async function acceptOrder(id, data, actor) {
   const settings = await getSettings();
   return mutateOrder(id, async (o) => {
     if (o.status !== 'new') throw httpError(409, `Order already ${o.status}`);
+    const room = data.room ? String(data.room).trim() : '';
+    if (settings.requireRoomOnAccept && !room) throw httpError(400, 'Please select a room.');
     o.status = 'accepted';
     o.acceptedAt = nowIso();
     o.acceptedBy = actorRef(actor);
-    o.room = data.room ? String(data.room).trim() : o.room;
+    o.room = room || o.room;
     o.loads = computeLoads(o.items, settings.piecesPerLoad);
     const computed = o.loads * settings.pricePerLoad;
     let priceNote = '';
@@ -892,6 +900,7 @@ async function mutateOrder(id, fn) {
 }
 
 async function notifyGuest(kind, order, settings) {
+  if (!validEmail(order.guestEmail)) return; // guest ordered without an email — nothing to send
   try {
     const { subject, html } = orderEmail(kind, order, { ...settings, baseUrl: effectiveBaseUrl(settings) });
     const r = await sendEmail({ to: order.guestEmail, subject, html });

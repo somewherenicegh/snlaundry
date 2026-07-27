@@ -35,11 +35,11 @@
 
         <label>Payment</label>
         <div class="choice" id="timingChoice">
-          <label><input type="radio" name="timing" value="now" checked /><span>Pay now</span></label>
-          <label><input type="radio" name="timing" value="pickup" /><span>Pay at pickup</span></label>
+          <label><input type="radio" name="timing" value="pickup" checked /><span>Pay at pickup</span></label>
+          <label><input type="radio" name="timing" value="now" /><span>Pay now</span></label>
         </div>
 
-        <div id="methodRow">
+        <div id="methodRow" style="display:none">
           <label>Pay now with</label>
           <div class="choice">
             <label><input type="radio" name="method" value="cash" checked /><span>Cash</span></label>

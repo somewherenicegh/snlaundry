@@ -755,7 +755,7 @@ window.openAccept = async (id) => {
     <h3>Accept order #${o.number}</h3>
     <p class="hint">${esc(o.guestName)} · ${o.items} items · ${o.loads} load(s)</p>
     <div id="acceptMsg"></div>
-    <label>Room name</label>
+    <label>Room name${state.settings?.requireRoomOnAccept ? ' <span style="color:var(--danger)">*</span>' : ''}</label>
     ${roomField('acRoom', o.room)}
     <label>Ready for pickup</label>
     <input id="acPickup" type="datetime-local" value="${pickupDefault}">
@@ -778,10 +778,12 @@ window.openAccept = async (id) => {
   `);
 };
 window.doAccept = async (id) => {
+  const room = ($('#acRoom').value || '').trim();
+  if (state.settings?.requireRoomOnAccept && !room) return notice($('#acceptMsg'), 'err', 'Please select a room before accepting.');
   try {
     const pickup = $('#acPickup').value ? new Date($('#acPickup').value).toISOString() : null;
     await api('POST', `/orders/${id}/accept`, {
-      room: $('#acRoom').value.trim(), pickupAt: pickup, price: $('#acPrice').value,
+      room, pickupAt: pickup, price: $('#acPrice').value,
       priceReason: $('#acPriceReason').value.trim(),
       paymentStatus: $('#acPayStatus').value, paymentMethod: $('#acMethod') ? $('#acMethod').value : 'cash',
     });
@@ -1138,6 +1140,12 @@ async function renderSettings(view) {
       <button class="secondary" style="margin-top:10px" onclick="saveRooms()">Save rooms</button>
     </div>
     <div class="card">
+      <h3 style="margin-top:0">Required fields</h3>
+      <p class="hint">Guest name, number of items and payment choice are always required. Toggle the optional ones below (saved with "Save settings").</p>
+      <label style="display:flex;gap:9px;align-items:center;font-weight:400"><input type="checkbox" id="stReqEmail" style="width:auto" ${s.requireEmail ? 'checked' : ''}> Guest must give an email when ordering</label>
+      <label style="display:flex;gap:9px;align-items:center;font-weight:400;margin-top:8px"><input type="checkbox" id="stReqRoom" style="width:auto" ${s.requireRoomOnAccept ? 'checked' : ''}> Room must be selected when accepting an order</label>
+    </div>
+    <div class="card">
       <h3 style="margin-top:0">Pricing & loads</h3>
       <label>Currency</label>
       <select id="stCurrency">${CURRENCIES.map(([c, sym]) => `<option value="${c}|${sym}" ${s.currency?.code === c ? 'selected' : ''}>${c} (${sym})</option>`).join('')}</select>
@@ -1307,6 +1315,7 @@ window.saveSettings = async () => {
   const body = {
     hostelName: $('#stName').value.trim(), accentColor: $('#stColor').value, hoverColor: $('#stHover').value,
     currency: { code, symbol }, rooms: $('#stRooms').value, pricePerLoad: $('#stPrice').value, piecesPerLoad: $('#stPieces').value,
+    requireEmail: $('#stReqEmail').checked, requireRoomOnAccept: $('#stReqRoom').checked,
     turnaroundHours: $('#stTurn').value,
     followUpHours: $('#stFollowUp').value, followUpEveryHours: $('#stFollowEvery').value,
     pickupLeadHours: $('#stPickupLead').value,
