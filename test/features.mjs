@@ -267,6 +267,13 @@ try {
   await featStore.saveCollection('orders', ords);
   due = await findFollowUpOrders();
   ok('order past pickup time is NOT due (no sound after pickup)', !due.some((o) => o.id === p1.body.id));
+  // A READY order approaching pickup should NOT trigger a follow-up (it's already done).
+  const p2 = await api('POST', '/api/orders', { body: { guestName: 'P2', guestEmail: 'p2@example.com', items: 2, paymentTiming: 'pickup' } });
+  await api('POST', `/api/orders/${p2.body.id}/accept`, { headers: H(adminT), body: { room: 'X', pickupAt: new Date(Date.now() + 2 * 3600000).toISOString() } });
+  await api('POST', `/api/orders/${p2.body.id}/advance`, { headers: H(adminT), body: {} }); // cleaning
+  await api('POST', `/api/orders/${p2.body.id}/advance`, { headers: H(adminT), body: {} }); // ready
+  due = await findFollowUpOrders();
+  ok('a READY order approaching pickup is NOT due', !due.some((o) => o.id === p2.body.id));
 
   section('Admin-defined rooms');
   r = await api('PUT', '/api/settings', { headers: H(adminT), body: { rooms: 'Duafe\nSankofa, Adinkra\nDuafe' } });

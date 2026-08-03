@@ -713,8 +713,9 @@ export function isSnoozed(o, now = Date.now()) {
   return !!(o.delayReasonAt && (now - new Date(o.delayReasonAt).getTime()) < DELAY_SNOOZE_MS);
 }
 // True when pickup is within the lead window (approaching) but not yet past.
+// Ready orders are excluded — they're already done, so there's nothing to follow up.
 export function pickupApproaching(o, leadMs, now = Date.now()) {
-  if (!o.pickupAt) return false;
+  if (!o.pickupAt || o.status === 'ready') return false;
   const dt = new Date(o.pickupAt).getTime() - now;
   return dt > 0 && dt <= leadMs;
 }

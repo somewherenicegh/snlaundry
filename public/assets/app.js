@@ -146,7 +146,7 @@ function acceptedTooLong(o) {
 }
 function pickupApproaching(o) {
   const lead = (state.settings?.pickupLeadHours ?? 3) * 3600000;
-  if (!o.pickupAt) return false;
+  if (!o.pickupAt || o.status === 'ready') return false; // ready = done, no pre-pickup nudge
   const dt = new Date(o.pickupAt) - new Date();
   return dt > 0 && dt <= lead;
 }
